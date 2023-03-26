@@ -34,7 +34,9 @@ defmodule Config do
   `Config` also provides a low-level API for evaluating and reading
   configuration, under the `Config.Reader` module.
 
-  > **Important:** if you are writing a library to be used by other developers,
+  > #### Avoid application environment in libraries {: .info}
+  >
+  > If you are writing a library to be used by other developers,
   > it is generally recommended to avoid the application environment, as the
   > application environment is effectively a global storage. Also note that
   > the `config/config.exs` of a library is not evaluated when the library is
@@ -62,7 +64,27 @@ defmodule Config do
         import_config config
       end
 
-  The last step is to replace all `Mix.env()` calls by `config_env()`.
+  The last step is to replace all `Mix.env()` calls in the config files with `config_env()`.
+
+  Keep in mind you must also avoid using `Mix.env()` inside your project files.
+  To check the environment at _runtime_, you may add a configuration key:
+
+      # config.exs
+      ...
+      config :my_app, env: config_env()
+
+  Then, in other scripts and modules, you may get the environment with
+  `Application.fetch_env!/2`:
+
+      # router.exs
+      ...
+      if Application.fetch_env!(:my_app, :env) == :prod do
+        ...
+      end
+
+  The only files where you may access functions from the `Mix` module are
+  the `mix.exs` file and inside custom Mix tasks, which always within the
+  `Mix.Tasks` namespace.
 
   ## config/runtime.exs
 
@@ -301,8 +323,6 @@ defmodule Config do
         :ok
     end
 
-    # TODO: Emit a warning if Mix.env() is found in said files in Elixir v1.15.
-    # Note this won't be a deprecation warning as it will always be emitted.
     Code.eval_string(contents, [], file: file)
   end
 

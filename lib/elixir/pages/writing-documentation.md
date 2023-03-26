@@ -1,13 +1,12 @@
 # Writing Documentation
 
-Elixir treats documentation as a first-class citizen. This means documentation should be easy to write and easy to read. In this document you will learn how to write documentation in Elixir, covering constructs like module attributes, style practices and doctests.
+Elixir treats documentation as a first-class citizen. Documentation must be easy to write and easy to read. In this document you will learn how to write documentation in Elixir, covering constructs like module attributes, style practices, and doctests.
 
 ## Markdown
 
-Elixir documentation is written using Markdown. There are plenty of guides on Markdown online, we recommend the ones available at GitHub as a getting started point:
+Elixir documentation is written using Markdown. There are plenty of guides on Markdown online, we recommend the one from GitHub as a getting started point:
 
   * [Basic writing and formatting syntax](https://help.github.com/articles/basic-writing-and-formatting-syntax/)
-  * [Mastering Markdown](https://guides.github.com/features/mastering-markdown/)
 
 ## Module Attributes
 
@@ -61,7 +60,7 @@ Another common metadata is `:deprecated`, which emits a warning in the documenta
 
     @doc deprecated: "Use Foo.bar/2 instead"
 
-Note the `:deprecated` key does not warn when a developer invokes the functions. If you want the code to also emit a warning, you can use the `@deprecated` attribute:
+Note that the `:deprecated` key does not warn when a developer invokes the functions. If you want the code to also emit a warning, you can use the `@deprecated` attribute:
 
     @deprecated "Use Foo.bar/2 instead"
 
@@ -110,7 +109,7 @@ Finally, beware of redundant code comments, such as the ones describing the exac
 
 In summary, documentation is a contract with users of your API, who may not necessarily have access to the source code; whereas code comments are for those who interact directly with the source. You can learn and express different guarantees about your software by separating those two concepts.
 
-## Hiding Internal Modules and Functions
+## Hiding internal Modules and Functions
 
 Besides the modules and functions libraries provide as part of their public interface, libraries may also implement important functionality that is not part of their API. While these modules and functions can be accessed, they are meant to be internal to the library and thus should not have documentation for end users.
 
@@ -136,10 +135,10 @@ In case you don't want to hide a whole module, you can hide functions individual
 
 However, keep in mind `@moduledoc false` or `@doc false` do not make a function private. The function above can still be invoked as `MyApp.Sample.add(1, 2)`. Not only that, if `MyApp.Sample` is imported, the `add/2` function will also be imported into the caller. For those reasons, be cautious when adding `@doc false` to functions, instead use one of these two options:
 
-  * Move the undocumented function to a module with `@moduledoc false`, like `MyApp.Hidden`, ensuring the function won't be accidentally exposed or imported. Remember you can use `@moduledoc false` to hide a whole module and still document each function with `@doc`. Tools will still ignore the module.
+  * Move the undocumented function to a module with `@moduledoc false`, like `MyApp.Hidden`, ensuring the function won't be accidentally exposed or imported. Remember that you can use `@moduledoc false` to hide a whole module and still document each function with `@doc`. Tools will still ignore the module.
 
   * Start the function name with one or two underscores, for example, `__add__/2`. Functions starting with underscore are automatically treated as hidden, although you can also be explicit and add `@doc false`. The compiler does not import functions with leading underscores and they hint to anyone reading the code of their intended private usage.
 
-## Code.fetch_docs/1
+## `Code.fetch_docs/1`
 
-Elixir stores documentation inside pre-defined chunks in the bytecode. It can be accessed from Elixir by using the `Code.fetch_docs/1` function. This also means documentation is only accessed when required and not when modules are loaded by the Virtual Machine. The only downside is that modules defined in-memory, like the ones defined in IEx, cannot have their documentation accessed as they do not have their bytecode written to disk.
+Elixir stores documentation inside pre-defined chunks in the bytecode. Documentation is not loaded into memory when modules are loaded, instead, it can be read from the bytecode in disk using the `Code.fetch_docs/1` function. The downside is that modules defined in-memory, like the ones defined in IEx, cannot have their documentation accessed as they do not write their bytecode to disk.

@@ -31,6 +31,11 @@ defmodule Inspect.Opts do
       options. Useful when implementing the `Inspect` protocol for nested structs
       to pass the custom options through.
 
+      It supports some pre-defined keys:
+      - `:sort_maps` (since v1.15.0) - if set to `true`, sorts key-value pairs in maps.
+        This can be helpful to make map inspection deterministic for testing,
+        especially since key order is random since OTP 26.
+
     * `:inspect_fun` (since v1.9.0) - a function to build algebra documents.
       Defaults to `Inspect.Opts.default_inspect_fun/0`.
 
@@ -62,8 +67,11 @@ defmodule Inspect.Opts do
       colorized. The keys are types and the values are the colors to use for
       each type (for example, `[number: :red, atom: :blue]`). Types can include
       `:atom`, `:binary`, `:boolean`, `:list`, `:map`, `:number`, `:regex`,
-      `:string`, and `:tuple`. Custom data types may provide their own options.
+      `:string`, `:tuple`, or some types to represent AST like `:variable`,
+      `:call`, and `:operator`.
+      Custom data types may provide their own options.
       Colors can be any `t:IO.ANSI.ansidata/0` as accepted by `IO.ANSI.format/1`.
+      A default list of colors can be retrieved from `IO.ANSI.syntax_colors/0`.
 
     * `:width` - number of characters per line used when pretty is `true` or when
       printing to IO devices. Set to `0` to force each item to be printed on its
@@ -89,11 +97,9 @@ defmodule Inspect.Opts do
 
   @type color_key :: atom
 
-  # TODO: Remove :char_lists key and :as_char_lists value on v2.0
   @type t :: %__MODULE__{
           base: :decimal | :binary | :hex | :octal,
           binaries: :infer | :as_binaries | :as_strings,
-          char_lists: :infer | :as_lists | :as_char_lists,
           charlists: :infer | :as_lists | :as_charlists,
           custom_options: keyword,
           inspect_fun: (any, t -> Inspect.Algebra.t()),
@@ -225,13 +231,13 @@ defmodule Inspect.Algebra do
 
   This implementation provides two types of breaks: `:strict` and `:flex`.
   When a group does not fit, all strict breaks are treated as newlines.
-  Flex breaks however are re-evaluated on every occurrence and may still
+  Flex breaks, however, are re-evaluated on every occurrence and may still
   be rendered flat. See `break/1` and `flex_break/1` for more information.
 
   This implementation also adds `force_unfit/1` and `next_break_fits/2` which
   give more control over the document fitting.
 
-    [0]: http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.34.2200
+    [0]: https://lindig.github.io/papers/strictly-pretty-2000.pdf
 
   """
 
@@ -255,10 +261,16 @@ defmodule Inspect.Algebra do
           | doc_group
           | doc_nest
           | doc_string
+          | doc_limit
 
   @typep doc_string :: {:doc_string, t, non_neg_integer}
   defmacrop doc_string(string, length) do
     quote do: {:doc_string, unquote(string), unquote(length)}
+  end
+
+  @typep doc_limit :: {:doc_limit, t, pos_integer | :infinity}
+  defmacrop doc_limit(doc, limit) do
+    quote do: {:doc_limit, unquote(doc), unquote(limit)}
   end
 
   @typep doc_cons :: {:doc_cons, t, t}
@@ -310,7 +322,8 @@ defmodule Inspect.Algebra do
     :doc_force,
     :doc_group,
     :doc_nest,
-    :doc_string
+    :doc_string,
+    :doc_limit
   ]
 
   defguard is_doc(doc)
@@ -462,8 +475,9 @@ defmodule Inspect.Algebra do
 
   defp container_each([term | terms], limit, opts, fun, acc, simple?)
        when is_list(terms) and is_limit(limit) do
-    limit = decrement(limit)
-    doc = fun.(term, %{opts | limit: limit})
+    new_limit = decrement(limit)
+    doc = fun.(term, %{opts | limit: new_limit})
+    limit = if doc == :doc_nil, do: limit, else: new_limit
     container_each(terms, limit, opts, fun, [doc | acc], simple? and simple?(doc))
   end
 
@@ -575,6 +589,10 @@ defmodule Inspect.Algebra do
     doc_cons(doc1, doc2)
   end
 
+  def no_limit(doc) do
+    doc_limit(doc, :infinity)
+  end
+
   @doc ~S"""
   Concatenates a list of documents returning a new document.
 
@@ -624,7 +642,7 @@ defmodule Inspect.Algebra do
       ["hello", "\n     ", "world"]
 
   """
-  @spec nest(t, non_neg_integer | :cursor | :reset, :always | :break) :: doc_nest
+  @spec nest(t, non_neg_integer | :cursor | :reset, :always | :break) :: doc_nest | t
   def nest(doc, level, mode \\ :always)
 
   def nest(doc, :cursor, mode) when is_doc(doc) and mode in [:always, :break] do
@@ -965,7 +983,7 @@ defmodule Inspect.Algebra do
   @typep mode :: :flat | :flat_no_break | :break | :break_no_flat
 
   @spec fits?(
-          width :: non_neg_integer(),
+          width :: non_neg_integer() | :infinity,
           column :: non_neg_integer(),
           break? :: boolean(),
           entries
@@ -1030,9 +1048,17 @@ defmodule Inspect.Algebra do
   defp fits?(w, k, b?, [{i, m, doc_group(x, _)} | t]),
     do: fits?(w, k, b?, [{i, m, x} | {:tail, b?, t}])
 
-  @spec format(width :: non_neg_integer() | :infinity, column :: non_neg_integer(), [
-          {integer, mode, t}
-        ]) :: [binary]
+  defp fits?(w, k, b?, [{i, m, doc_limit(x, :infinity)} | t]) when w != :infinity,
+    do: fits?(:infinity, k, b?, [{i, :flat, x}, {i, m, doc_limit(empty(), w)} | t])
+
+  defp fits?(_w, k, b?, [{i, m, doc_limit(x, w)} | t]),
+    do: fits?(w, k, b?, [{i, m, x} | t])
+
+  @spec format(
+          width :: non_neg_integer() | :infinity,
+          column :: non_neg_integer(),
+          [{integer, mode, t}]
+        ) :: [binary]
   defp format(_, _, []), do: []
   defp format(w, k, [{_, _, :doc_nil} | t]), do: format(w, k, t)
   defp format(w, _, [{i, _, :doc_line} | t]), do: [indent(i) | format(w, i, t)]
@@ -1084,6 +1110,15 @@ defmodule Inspect.Algebra do
     else
       format(w, k, [{i, :break, x} | t])
     end
+  end
+
+  # Limit is set to infinity and then reverts
+  defp format(w, k, [{i, m, doc_limit(x, :infinity)} | t]) when w != :infinity do
+    format(:infinity, k, [{i, :flat, x}, {i, m, doc_limit(empty(), w)} | t])
+  end
+
+  defp format(_w, k, [{i, m, doc_limit(x, w)} | t]) do
+    format(w, k, [{i, m, x} | t])
   end
 
   defp collapse(["\n" <> _ | t], max, count, i) do

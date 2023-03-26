@@ -3,12 +3,14 @@ Code.require_file("../test_helper.exs", __DIR__)
 defmodule Mix.UmbrellaTest do
   use MixTest.Case
 
-  test "apps_paths" do
+  test "apps_paths and parent_umbrella_project_file" do
     in_fixture("umbrella_dep/deps/umbrella", fn ->
       assert Mix.Project.apps_paths() == nil
+      assert Mix.Project.parent_umbrella_project_file() == nil
 
       Mix.Project.in_project(:umbrella, ".", fn _ ->
         assert Mix.Project.apps_paths() == %{bar: "apps/bar", foo: "apps/foo"}
+        assert Mix.Project.parent_umbrella_project_file() == nil
 
         assert_received {:mix_shell, :error,
                          ["warning: path \"apps/dont_error_on_missing_mixfile\"" <> _]}
@@ -360,7 +362,7 @@ defmodule Mix.UmbrellaTest do
       Mix.Project.in_project(:umbrella, ".", fn _ ->
         File.write!("apps/foo/lib/foo.ex", "raise ~s[oops]")
 
-        ExUnit.CaptureIO.capture_io(fn ->
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
           assert catch_exit(Mix.Task.run("compile", ["--verbose"]))
         end)
 
@@ -486,7 +488,7 @@ defmodule Mix.UmbrellaTest do
     end)
   end
 
-  test "reloads app in app tracer if .app changes" do
+  test "reloads app in app cache if .app changes" do
     in_fixture("umbrella_dep/deps/umbrella/apps", fn ->
       deps = [{:foo, in_umbrella: true}]
 
@@ -507,7 +509,7 @@ defmodule Mix.UmbrellaTest do
 
         Mix.Task.clear()
         Application.unload(:foo)
-        ensure_touched("../foo/lib/foo.ex", "_build/dev/lib/bar/.mix/compile.app_tracer")
+        ensure_touched("../foo/lib/foo.ex", "_build/dev/lib/bar/.mix/compile.app_cache")
 
         assert Mix.Task.run("compile", ["--verbose"]) == {:ok, []}
         assert_receive {:mix_shell, :info, ["Compiled lib/bar.ex"]}

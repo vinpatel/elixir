@@ -100,7 +100,15 @@ defmodule Kernel.Utils do
   @doc """
   Callback for defstruct.
   """
-  def defstruct(module, fields) do
+  def defstruct(module, fields, bootstrapped?) do
+    {set, bag} = :elixir_module.data_tables(module)
+
+    if :ets.member(set, :__struct__) do
+      raise ArgumentError,
+            "defstruct has already been called for " <>
+              "#{Kernel.inspect(module)}, defstruct can only be called once per module"
+    end
+
     case fields do
       fs when is_list(fs) ->
         :ok
@@ -112,7 +120,7 @@ defmodule Kernel.Utils do
     mapper = fn
       {key, val} when is_atom(key) ->
         try do
-          Macro.escape(val)
+          :elixir_quote.escape(val, false, :none)
         rescue
           e in [ArgumentError] ->
             raise ArgumentError, "invalid value for struct field #{key}, " <> Exception.message(e)
@@ -128,7 +136,20 @@ defmodule Kernel.Utils do
     end
 
     fields = :lists.map(mapper, fields)
-    enforce_keys = List.wrap(Module.get_attribute(module, :enforce_keys))
+
+    enforce_keys =
+      case :ets.lookup(set, :enforce_keys) do
+        [{_, enforce_keys, _, _}] when is_list(enforce_keys) ->
+          :ets.update_element(set, :enforce_keys, {3, :used})
+          enforce_keys
+
+        [{_, enforce_key, _, _}] ->
+          :ets.update_element(set, :enforce_keys, {3, :used})
+          [enforce_key]
+
+        [] ->
+          []
+      end
 
     # TODO: Make it raise on v2.0
     warn_on_duplicate_struct_key(:lists.keysort(1, fields))
@@ -142,12 +163,62 @@ defmodule Kernel.Utils do
     end
 
     :lists.foreach(foreach, enforce_keys)
-
     struct = :maps.put(:__struct__, module, :maps.from_list(fields))
+
+    body =
+      case bootstrapped? do
+        true ->
+          case enforce_keys do
+            [] ->
+              quote do
+                Enum.reduce(kv, @__struct__, fn {key, val}, map ->
+                  %{map | key => val}
+                end)
+              end
+
+            _ ->
+              quote do
+                {map, keys} =
+                  Enum.reduce(kv, {@__struct__, unquote(enforce_keys)}, fn
+                    {key, val}, {map, keys} ->
+                      {%{map | key => val}, List.delete(keys, key)}
+                  end)
+
+                case keys do
+                  [] ->
+                    map
+
+                  _ ->
+                    raise ArgumentError,
+                          "the following keys must also be given when building " <>
+                            "struct #{inspect(__MODULE__)}: #{inspect(keys)}"
+                end
+              end
+          end
+
+        false ->
+          quote do
+            :lists.foldl(
+              fn {key, val}, acc -> %{acc | key => val} end,
+              @__struct__,
+              kv
+            )
+          end
+      end
 
     case enforce_keys -- :maps.keys(struct) do
       [] ->
-        {struct, enforce_keys, Module.get_attribute(module, :derive)}
+        # The __struct__ field is used for expansion and for loading remote structs
+        :ets.insert(set, {:__struct__, struct, nil, []})
+
+        # Store all field metadata to go into __info__(:struct)
+        mapper = fn {key, val} ->
+          %{field: key, default: val, required: :lists.member(key, enforce_keys)}
+        end
+
+        :ets.insert(set, {{:elixir, :struct}, :lists.map(mapper, fields)})
+        derive = :lists.map(fn {_, value} -> value end, :ets.take(bag, {:accumulate, :derive}))
+        {struct, :lists.reverse(derive), quote(do: kv), body}
 
       error_keys ->
         raise ArgumentError,
@@ -260,7 +331,7 @@ defmodule Kernel.Utils do
     quote do
       case Macro.Env.in_guard?(__CALLER__) do
         true -> unquote(literal_quote(unquote_every_ref(expr, vars)))
-        false -> unquote(literal_quote(unquote_refs_once(expr, vars)))
+        false -> unquote(literal_quote(unquote_refs_once(expr, vars, env.module)))
       end
     end
   end
@@ -290,7 +361,7 @@ defmodule Kernel.Utils do
   end
 
   # Prefaces `guard` with unquoted versions of `refs`.
-  defp unquote_refs_once(guard, refs) do
+  defp unquote_refs_once(guard, refs, module) do
     {guard, used_refs} =
       Macro.postwalk(guard, %{}, fn
         {ref, meta, context} = var, acc when is_atom(ref) and is_atom(context) ->
@@ -304,7 +375,7 @@ defmodule Kernel.Utils do
 
                 %{} ->
                   generated = String.to_atom("arg" <> Integer.to_string(map_size(acc) + 1))
-                  new_var = Macro.var(generated, Elixir)
+                  new_var = Macro.unique_var(generated, module)
                   {new_var, Map.put(acc, pair, {new_var, var})}
               end
 

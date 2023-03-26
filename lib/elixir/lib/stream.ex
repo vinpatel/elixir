@@ -162,7 +162,8 @@ defmodule Stream do
   where each new chunk starts `step` elements into the enumerable.
 
   `step` is optional and, if not passed, defaults to `count`, i.e.
-  chunks do not overlap.
+  chunks do not overlap. Chunking will stop as soon as the collection
+  ends or when we emit an incomplete chunk.
 
   If the last chunk does not have `count` elements to fill the chunk,
   elements are taken from `leftover` to fill in the chunk. If `leftover`
@@ -185,6 +186,9 @@ defmodule Stream do
 
       iex> Stream.chunk_every([1, 2, 3, 4, 5, 6], 3, 3, []) |> Enum.to_list()
       [[1, 2, 3], [4, 5, 6]]
+
+      iex> Stream.chunk_every([1, 2, 3, 4], 3, 3, Stream.cycle([0])) |> Enum.to_list()
+      [[1, 2, 3], [4, 0, 0]]
 
   """
   @doc since: "1.5.0"
@@ -454,7 +458,10 @@ defmodule Stream do
   @doc """
   Executes the given function for each element.
 
-  Useful for adding side effects (like printing) to a stream.
+  The values in the stream do not change, therefore this
+  function is useful for adding side effects (like printing)
+  to a stream. See `map/2` if producing a different stream
+  is desired.
 
   ## Examples
 
@@ -873,7 +880,7 @@ defmodule Stream do
   `Stream.transform/3`.
   """
   @spec transform(Enumerable.t(), start_fun, reducer, after_fun) :: Enumerable.t()
-        when start_fun: (() -> acc),
+        when start_fun: (-> acc),
              reducer: (element, acc -> {Enumerable.t(), acc} | {:halt, acc}),
              after_fun: (acc -> term),
              acc: any
@@ -899,7 +906,7 @@ defmodule Stream do
   one used for closing resources.
   """
   @spec transform(Enumerable.t(), start_fun, reducer, last_fun, after_fun) :: Enumerable.t()
-        when start_fun: (() -> acc),
+        when start_fun: (-> acc),
              reducer: (element, acc -> {Enumerable.t(), acc} | {:halt, acc}),
              last_fun: (acc -> {Enumerable.t(), acc} | {:halt, acc}),
              after_fun: (acc -> term),
@@ -1274,7 +1281,7 @@ defmodule Stream do
   enumerable, transforming them with the `zip_fun` function as it goes.
 
   The first element from each of the enums in `enumerables` will be put into a list which is then passed to
-  the 1-arity `zip_fun` function. Then, the second elements from each of the enums are put into a list and passed to
+  the one-arity `zip_fun` function. Then, the second elements from each of the enums are put into a list and passed to
   `zip_fun`, and so on until any one of the enums in `enumerables` completes.
 
   Returns a new enumerable with the results of calling `zip_fun`.
@@ -1308,6 +1315,8 @@ defmodule Stream do
   defp zip_list(enumerables, {:suspend, acc}, fun, zip_fun) do
     {:suspended, acc, &zip_list(enumerables, &1, fun, zip_fun)}
   end
+
+  defp zip_list([], {:cont, acc}, _fun, _zip_fun), do: {:done, acc}
 
   defp zip_list(enumerables, {:cont, acc}, fun, zip_fun) do
     case zip_list_heads_tails(enumerables, [], []) do
@@ -1534,7 +1543,7 @@ defmodule Stream do
       [0.5455598952593053, 0.6039309974353404, 0.6684893034823949]
 
   """
-  @spec repeatedly((() -> element)) :: Enumerable.t()
+  @spec repeatedly((-> element)) :: Enumerable.t()
   def repeatedly(generator_fun) when is_function(generator_fun, 0) do
     &do_repeatedly(generator_fun, &1, &2)
   end
@@ -1564,7 +1573,7 @@ defmodule Stream do
   of elements to be emitted and the next accumulator. The enumeration
   finishes if it returns `{:halt, acc}`.
 
-  As the name says, this function is useful to stream values from
+  As the function name suggests, this function is useful to stream values from
   resources.
 
   ## Examples
@@ -1596,7 +1605,7 @@ defmodule Stream do
       ["s", "t", "r", "i", "n", "g"]
 
   """
-  @spec resource((() -> acc), (acc -> {[element], acc} | {:halt, acc}), (acc -> term)) ::
+  @spec resource((-> acc), (acc -> {[element], acc} | {:halt, acc}), (acc -> term)) ::
           Enumerable.t()
   def resource(start_fun, next_fun, after_fun)
       when is_function(start_fun, 0) and is_function(next_fun, 1) and is_function(after_fun, 1) do
@@ -1710,11 +1719,25 @@ defmodule Stream do
 
   ## Examples
 
+  To create a stream that counts down and stops before zero:
+
       iex> Stream.unfold(5, fn
       ...>   0 -> nil
       ...>   n -> {n, n - 1}
       ...> end) |> Enum.to_list()
       [5, 4, 3, 2, 1]
+
+  If `next_fun` never returns `nil`, the returned stream is *infinite*:
+
+      iex> Stream.unfold(0, fn
+      ...>   n -> {n, n + 1}
+      ...> end) |> Enum.take(10)
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+      iex> Stream.unfold(1, fn
+      ...>   n -> {n, n * 2}
+      ...> end) |> Enum.take(10)
+      [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
 
   """
   @spec unfold(acc, (acc -> {element, acc} | nil)) :: Enumerable.t()

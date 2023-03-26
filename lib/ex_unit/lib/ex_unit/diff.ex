@@ -5,14 +5,19 @@ defmodule ExUnit.Diff do
   #
   # The Diff struct contains the fields `:equivalent?`, `:left`, `:right`.
   # The `:equivalent?` field represents if the `:left` and `:right` side are
-  # equivalents and contain no diffs. The `:left` and `:right` represent the sides
-  # of the comparison and contain ASTs with some special metas: `:diff` and
-  # `:diff_container`.
+  # equivalents and contain no diffs. The `:left` and `:right` represent the
+  # sides of the comparison as ASTs.
   #
-  # When meta `:diff` is `true`, the AST inside of it has no equivalent on the
-  # other side and should be rendered in a different color. If the AST is a
-  # literal and doesn't contain meta, the `:diff` meta will be placed in a
-  # wrapping block.
+  # The ASTs may be wrapped in blocks with two special metas:
+  #
+  #   * `:diff` - when `true`, the AST inside of it has no equivalent
+  #     on the other side and should be rendered in a different color
+  #
+  #   * `:delimiter` - that particular block should be rendered with
+  #     a delimiter
+  #
+  # Given blocks are do not appear on the left side or right, it is
+  # safe to perform such wrapping.
 
   alias Inspect.Algebra
 
@@ -39,87 +44,93 @@ defmodule ExUnit.Diff do
 
   # Main entry point for recursive diff
 
-  defp diff(left, right, %{context: :match} = env), do: diff_quoted(left, right, env)
+  defp diff(left, right, %{context: :match} = env) do
+    case left do
+      {_, [original: original] ++ _, _} ->
+        diff_quoted(original, right, left, env)
+
+      _ ->
+        diff_quoted(left, right, nil, env)
+    end
+  end
+
   defp diff(left, right, env), do: diff_value(left, right, env)
 
   # diff quoted
 
-  defp diff_quoted({:_, _, context} = left, right, env) when is_atom(context) do
+  defp diff_quoted({:_, _, context} = left, right, _expanded, env) when is_atom(context) do
     diff_right = escape(right)
     diff = %__MODULE__{equivalent?: true, left: left, right: diff_right}
     {diff, env}
   end
 
-  defp diff_quoted({:^, _, [{name, _, context}]} = left, right, env)
+  defp diff_quoted({:^, _, [{name, _, context}]} = left, right, _expanded, env)
        when is_atom(name) and is_atom(context) do
     diff_pin(left, right, env)
   end
 
-  defp diff_quoted({name, _, context} = left, right, env)
+  defp diff_quoted({name, _, context} = left, right, _expanded, env)
        when is_atom(name) and is_atom(context) and
               name not in [:__MODULE__, :__DIR__, :__STACKTRACE__, :__ENV__, :__CALLER__] do
     diff_var(left, right, env)
   end
 
-  defp diff_quoted({:-, _, [number]}, right, env) when is_number(number) do
-    diff_quoted(-number, right, env)
+  defp diff_quoted({:-, _, [number]}, right, _expanded, env) when is_number(number) do
+    diff_quoted(-number, right, nil, env)
   end
 
-  defp diff_quoted({:+, _, [number]}, right, env) when is_number(number) do
-    diff_quoted(number, right, env)
+  defp diff_quoted({:+, _, [number]}, right, _expanded, env) when is_number(number) do
+    diff_quoted(number, right, nil, env)
   end
 
-  defp diff_quoted({:++, meta, [prefix, suffix]}, right, env) when is_list(right) do
-    case prefix do
-      {_, [expanded: expanded] ++ _, _} ->
-        diff_maybe_improper_list({:++, meta, [expanded, suffix]}, right, env)
-
-      _ ->
-        diff_maybe_improper_list({:++, meta, [prefix, suffix]}, right, env)
-    end
+  defp diff_quoted({:++, meta, [prefix, suffix]}, right, _expanded, env) when is_list(right) do
+    diff_maybe_improper_list({:++, meta, [prefix, suffix]}, right, env)
   end
 
-  defp diff_quoted({:{}, _, left}, right, env) when is_tuple(right) do
+  defp diff_quoted({:{}, _, left}, right, _expanded, env) when is_tuple(right) do
     diff_tuple(left, Tuple.to_list(right), env)
   end
 
-  defp diff_quoted({_, _} = left, right, env) when is_tuple(right) do
+  defp diff_quoted({_, _} = left, right, _expanded, env) when is_tuple(right) do
     diff_tuple(Tuple.to_list(left), Tuple.to_list(right), env)
   end
 
-  defp diff_quoted({:%, _, [struct, {:%{}, _, kw}]}, %{} = right, env) when is_list(kw) do
+  defp diff_quoted({:%, _, [struct, {:%{}, _, kw}]}, %{} = right, _expanded, env)
+       when is_list(kw) do
     diff_quoted_struct([__struct__: struct] ++ kw, right, env)
   end
 
-  defp diff_quoted({:%{}, _, kw}, %{} = right, env) when is_list(kw) do
+  defp diff_quoted({:%{}, _, kw}, %{} = right, _expanded, env) when is_list(kw) do
     diff_quoted_struct(kw, right, env)
   end
 
-  defp diff_quoted({:<>, _, [literal, _]} = left, right, env)
+  defp diff_quoted({:<>, _, [literal, _]} = left, right, _expanded, env)
        when is_binary(literal) and is_binary(right) do
     diff_string_concat(left, right, env)
   end
 
-  defp diff_quoted({:when, _, [_, _]} = left, right, env) do
+  defp diff_quoted({:when, _, [_, _]} = left, right, _expanded, env) do
     diff_guard(left, right, env)
   end
 
-  defp diff_quoted({_, [{:expanded, expanded} | _], _} = left, right, env) do
-    macro = Macro.update_meta(left, &Keyword.delete(&1, :expanded))
-    diff_macro(macro, expanded, right, env)
+  defp diff_quoted({_, _, _} = left, right, expanded, env) when expanded != nil do
+    expanded = Macro.update_meta(expanded, &Keyword.delete(&1, :original))
+    {diff, post_env} = diff(expanded, right, env)
+    diff_left = update_diff_meta(left, !diff.equivalent?)
+    {%{diff | left: diff_left}, post_env}
   end
 
-  defp diff_quoted(left, right, env) when is_list(left) and is_list(right) do
+  defp diff_quoted(left, right, _expanded, env) when is_list(left) and is_list(right) do
     diff_maybe_list(left, right, env)
   end
 
-  defp diff_quoted(left, right, env)
+  defp diff_quoted(left, right, _expanded, env)
        when is_atom(left) or is_number(left) or is_reference(left) or
               is_pid(left) or is_function(left) or is_binary(left) do
     diff_value(left, right, env)
   end
 
-  defp diff_quoted(left, right, %{context: :match} = env) do
+  defp diff_quoted(left, right, _expanded, %{context: :match} = env) do
     diff_left = update_diff_meta(left, true)
     diff_right = escape(right) |> update_diff_meta(true)
     diff = %__MODULE__{equivalent?: false, left: diff_left, right: diff_right}
@@ -169,6 +180,30 @@ defmodule ExUnit.Diff do
     diff_string(left, right, ?", env)
   end
 
+  defp diff_value(left, right, env) when is_function(left) and is_function(right) do
+    # If they are local functions in the same module and same name,
+    # then they have different environment, which we compare.
+    if Function.info(left, :type) == {:type, :local} and
+         Function.info(right, :type) == {:type, :local} and
+         Function.info(left, :module) == Function.info(right, :module) and
+         Function.info(left, :new_uniq) == Function.info(right, :new_uniq) and
+         Function.info(left, :new_index) == Function.info(right, :new_index) do
+      {:env, left_env} = Function.info(left, :env)
+      {:env, right_env} = Function.info(right, :env)
+      {diff, env} = diff_maybe_improper_list(left_env, right_env, env)
+
+      diff = %{
+        diff
+        | left: %{custom: &function_env_to_algebra(left, diff.left, &1)},
+          right: %{custom: &function_env_to_algebra(right, diff.right, &1)}
+      }
+
+      {diff, env}
+    else
+      diff_value(left, right, env)
+    end
+  end
+
   defp diff_value(left, right, env) do
     diff_left = escape(left) |> update_diff_meta(true)
     diff_right = escape(right) |> update_diff_meta(true)
@@ -176,18 +211,10 @@ defmodule ExUnit.Diff do
     {diff, env}
   end
 
-  # Macros
-
-  defp diff_macro(macro, expanded, right, env) do
-    {diff, post_env} = diff(expanded, right, env)
-    diff_left = update_diff_meta(macro, !diff.equivalent?)
-    {%{diff | left: diff_left}, post_env}
-  end
-
   # Guards
 
   defp diff_guard({:when, _, [expression, clause]}, right, env) do
-    {diff_expression, post_env} = diff_quoted(expression, right, env)
+    {diff_expression, post_env} = diff_quoted(expression, right, nil, env)
 
     {guard_clause, guard_equivalent?} =
       if diff_expression.equivalent? do
@@ -206,42 +233,49 @@ defmodule ExUnit.Diff do
     {diff, post_env}
   end
 
-  defp diff_guard_clause({op, _, [clause1, clause2]}, bindings) when op in [:when, :or, :and] do
-    {diff_clause1, clause1_equivalent?} = diff_guard_clause(clause1, bindings)
-    {diff_clause2, clause2_equivalent?} = diff_guard_clause(clause2, bindings)
-
-    equivalent? =
-      case op do
-        :and -> clause1_equivalent? and clause2_equivalent?
-        _other -> clause1_equivalent? or clause2_equivalent?
-      end
-
-    diff = {op, [], [diff_clause1, diff_clause2]}
-    {diff, equivalent?}
-  end
-
   defp diff_guard_clause(quoted, bindings) do
-    expanded =
-      Macro.prewalk(quoted, fn
-        {_, [{:expanded, expanded} | _], _} ->
-          expanded
+    case original_or_current(quoted) do
+      {op, _, [clause1, clause2]} when op in [:and, :or, :when] ->
+        {diff_clause1, clause1_equivalent?} = diff_guard_clause(clause1, bindings)
+        {diff_clause2, clause2_equivalent?} = diff_guard_clause(clause2, bindings)
 
-        {var, _, context} = expr when is_atom(var) and is_atom(context) ->
-          if Map.has_key?(bindings, var_context(expr)) do
-            expr
-          else
-            throw(:abort)
+        equivalent? =
+          case op do
+            :and -> clause1_equivalent? and clause2_equivalent?
+            _other -> clause1_equivalent? or clause2_equivalent?
           end
 
-        other ->
-          other
-      end)
+        diff = {op, [], [diff_clause1, diff_clause2]}
+        {diff, equivalent?}
 
-    {equivalent?, _bindings} = Code.eval_quoted(expanded, Map.to_list(bindings))
-    {update_diff_meta(quoted, !equivalent?), equivalent?}
-  catch
-    :abort -> {quoted, false}
+      _ ->
+        {original, valid?} =
+          Macro.postwalk(quoted, true, fn
+            {_, [original: original] ++ _, _}, valid? ->
+              {original, valid?}
+
+            {var, _, context} = expr, valid? when is_atom(var) and is_atom(context) ->
+              if Map.has_key?(bindings, var_context(expr)) do
+                {expr, valid?}
+              else
+                {expr, false}
+              end
+
+            other, valid? ->
+              {other, valid?}
+          end)
+
+        if valid? do
+          {equivalent?, _bindings} = Code.eval_quoted(quoted, Map.to_list(bindings))
+          {update_diff_meta(original, equivalent? != true), equivalent? == true}
+        else
+          {original, false}
+        end
+    end
   end
+
+  defp original_or_current({_, [original: original] ++ _, _}), do: original
+  defp original_or_current(current), do: current
 
   # Pins
 
@@ -313,7 +347,15 @@ defmodule ExUnit.Diff do
 
   defp diff_maybe_list(left, right, env) do
     if List.ascii_printable?(left) and List.ascii_printable?(right) do
-      diff_string(List.to_string(left), List.to_string(right), ?', env)
+      {diff, env} = diff_string(List.to_string(left), List.to_string(right), ?", env)
+
+      diff = %{
+        diff
+        | left: %{custom: &charlist_to_algebra(diff.left, &1)},
+          right: %{custom: &charlist_to_algebra(diff.right, &1)}
+      }
+
+      {diff, env}
     else
       diff_maybe_improper_list(left, right, env)
     end
@@ -370,15 +412,17 @@ defmodule ExUnit.Diff do
     left = Enum.reverse(left)
 
     case extract_diff_meta(right) do
-      {[_ | _] = list, _diff?} ->
-        # Inner was escaped, diffs are inside
+      # Outer was escaped. Copy its diff? to its inner element and potentially escape it.
+      {{unescaped}, diff?} ->
+        rebuild_maybe_improper(unescaped, left, &(&1 |> escape() |> update_diff_meta(diff?)))
+
+      # We have a proper list, if there are any diffs, they will be inside, so copy as is.
+      {[_ | _] = list, false} ->
         rebuild_maybe_improper(list, left, & &1)
 
-      {list, diff?} ->
-        # Outer was escaped, move diffs and escape inside
-        list
-        |> unescape()
-        |> rebuild_maybe_improper(left, &(&1 |> escape() |> update_diff_meta(diff?)))
+      # The right itself is improper, so just add it as is.
+      {_, _} ->
+        rebuild_maybe_improper(right, left, & &1)
     end
   end
 
@@ -687,8 +731,6 @@ defmodule ExUnit.Diff do
         # If they are equivalent, still use their inspected form
         case diff_map(kw, right, struct1, struct2, env) do
           {%{equivalent?: true}, ctx} ->
-            left = block_diff_container([inspect_left], nil)
-            right = block_diff_container([inspect_right], nil)
             {%__MODULE__{equivalent?: true, left: left, right: right}, ctx}
 
           diff_ctx ->
@@ -785,7 +827,6 @@ defmodule ExUnit.Diff do
       merge_diff(parsed_diff, quoted_diff, fn left1, left2, right1, right2 ->
         new_left = rebuild_concat_string(left1, left2, indexes)
         new_right = rebuild_split_strings(right1, right2)
-
         {new_left, new_right}
       end)
 
@@ -815,12 +856,15 @@ defmodule ExUnit.Diff do
     left
   end
 
-  defp rebuild_split_strings({:__block__, meta, left_list}, {:__block__, _, right_list}) do
-    {:__block__, meta, left_list ++ right_list}
+  defp rebuild_split_strings(
+         %{contents: left, delimiter: delimiter},
+         %{contents: right, delimiter: delimiter}
+       ) do
+    %{contents: left ++ right, delimiter: delimiter}
   end
 
-  defp rebuild_split_strings({:__block__, meta, left_list}, right) do
-    {:__block__, meta, left_list ++ [right]}
+  defp rebuild_split_strings(%{contents: contents, delimiter: delimiter}, right) do
+    %{contents: contents ++ [{false, right}], delimiter: delimiter}
   end
 
   defp rebuild_concat_string(literal, nil, []) do
@@ -834,58 +878,53 @@ defmodule ExUnit.Diff do
   defp rebuild_concat_string(literal, quoted, [index | rest]) do
     {next, continue} = next_concat_result(literal, index)
     rebuilt_right = rebuild_concat_string(continue, quoted, rest)
-
     {:<>, [], [next, rebuilt_right]}
   end
 
-  defp next_concat_result({:__block__, [{:diff_container, _} | _] = meta, list}, index) do
-    {next, continue} = next_concat_result(list, index)
-    {{:__block__, meta, next}, {:__block__, meta, continue}}
+  defp next_concat_result(%{contents: contents, delimiter: delimiter}, index) do
+    {next, continue} = next_concat_result(contents, index)
+    {%{contents: next, delimiter: delimiter}, %{contents: continue, delimiter: delimiter}}
   end
 
-  defp next_concat_result([head | tail], index) do
-    {string, diff_meta?} = extract_diff_meta(head)
-    length = String.length(string)
+  defp next_concat_result([{diff?, head} | tail], index) do
+    length = String.length(head)
 
     cond do
       length > index ->
-        {next, continue} = String.split_at(string, index)
-        next = [update_diff_meta(next, diff_meta?)]
-        continue = [update_diff_meta(continue, diff_meta?) | tail]
-
-        {next, continue}
+        {next, continue} = String.split_at(head, index)
+        {[{diff?, next}], [{diff?, continue} | tail]}
 
       length < index ->
         {next, continue} = next_concat_result(tail, index - length)
-        {[head | next], continue}
+        {[{diff?, head} | next], continue}
 
       true ->
-        {[head], tail}
+        {[{diff?, head}], tail}
     end
   end
 
-  defp block_diff_container(contents, nil),
-    do: {:__block__, [], contents}
-
-  defp block_diff_container(contents, container),
-    do: {:__block__, [diff_container: container], contents}
-
   defp string_script_to_diff([], delimiter, equivalent?, left, right) do
-    left = block_diff_container(Enum.reverse(left), delimiter)
-    right = block_diff_container(Enum.reverse(right), delimiter)
+    left = %{delimiter: delimiter, contents: Enum.reverse(left)}
+    right = %{delimiter: delimiter, contents: Enum.reverse(right)}
     %__MODULE__{equivalent?: equivalent?, left: left, right: right}
   end
 
   defp string_script_to_diff([{:eq, string} | tail], delimiter, equivalent?, left, right) do
-    string_script_to_diff(tail, delimiter, equivalent?, [string | left], [string | right])
+    string_script_to_diff(
+      tail,
+      delimiter,
+      equivalent?,
+      [{false, string} | left],
+      [{false, string} | right]
+    )
   end
 
   defp string_script_to_diff([{:del, string} | tail], delimiter, _equivalent?, left, right) do
-    string_script_to_diff(tail, delimiter, false, [update_diff_meta(string, true) | left], right)
+    string_script_to_diff(tail, delimiter, false, [{true, string} | left], right)
   end
 
   defp string_script_to_diff([{:ins, string} | tail], delimiter, _equivalent?, left, right) do
-    string_script_to_diff(tail, delimiter, false, left, [update_diff_meta(string, true) | right])
+    string_script_to_diff(tail, delimiter, false, left, [{true, string} | right])
   end
 
   # Numbers
@@ -901,17 +940,6 @@ defmodule ExUnit.Diff do
   """
   def to_algebra(quoted, diff_wrapper) do
     wrap_on_diff(quoted, &safe_to_algebra/2, diff_wrapper)
-  end
-
-  defp safe_to_algebra({:__block__, meta, list}, diff_wrapper) do
-    content_docs = Enum.map(list, &string_to_algebra(&1, diff_wrapper))
-
-    if container = meta[:diff_container] do
-      delimiter = to_string([container])
-      Algebra.concat([delimiter] ++ content_docs ++ [delimiter])
-    else
-      Algebra.concat(content_docs)
-    end
   end
 
   defp safe_to_algebra(list, diff_wrapper) when is_list(list) do
@@ -955,16 +983,28 @@ defmodule ExUnit.Diff do
     inspect(escaped)
   end
 
+  # Custom encoding for delimiters+contents
+  defp safe_to_algebra(%{delimiter: delimiter, contents: contents}, diff_wrapper) do
+    content_docs =
+      for {diff?, content} <- contents do
+        if diff?, do: diff_wrapper.(content), else: content
+      end
+
+    if delimiter do
+      delimiter = List.to_string([delimiter])
+      Algebra.concat([delimiter, Algebra.concat(content_docs), delimiter])
+    else
+      Algebra.concat(content_docs)
+    end
+  end
+
+  # Custom encoding for functions
+  defp safe_to_algebra(%{custom: literal}, diff_wrapper) do
+    literal.(diff_wrapper)
+  end
+
   defp safe_to_algebra(literal, _diff_wrapper) do
     inspect(literal)
-  end
-
-  def string_to_algebra(quoted, diff_wrapper) do
-    wrap_on_diff(quoted, &safe_string_to_algebra/2, diff_wrapper)
-  end
-
-  def safe_string_to_algebra(literal, _diff_wrapper) do
-    literal
   end
 
   defp keyword_to_algebra(quoted, diff_wrapper) do
@@ -1026,6 +1066,10 @@ defmodule ExUnit.Diff do
     wrap_on_diff(quoted, &safe_struct_to_algebra/2, diff_wrapper)
   end
 
+  defp safe_struct_to_algebra({:^, _, _} = name, _diff_wrapper) do
+    Macro.to_string(name)
+  end
+
   defp safe_struct_to_algebra(name, _diff_wrapper) do
     Macro.inspect_atom(:literal, name)
   end
@@ -1047,24 +1091,50 @@ defmodule ExUnit.Diff do
     end
   end
 
+  defp charlist_to_algebra(%{contents: contents}, diff_wrapper) do
+    content_doc =
+      for {diff, content} <- contents do
+        if diff, do: diff_wrapper.(content), else: content
+      end
+
+    Algebra.concat(["~c\"", Algebra.concat(content_doc), "\""])
+  end
+
+  defp function_env_to_algebra(function, ast, diff_wrapper) do
+    "#Function<" <> contents = inspect(function)
+
+    Algebra.concat([
+      "#Function<",
+      Algebra.nest(
+        Algebra.concat([
+          Algebra.line(),
+          binary_slice(contents, 0..-2//1),
+          Algebra.line(),
+          to_algebra(ast, diff_wrapper)
+        ]),
+        2
+      ),
+      Algebra.line(),
+      ">"
+    ])
+  end
+
   # Diff helpers
 
   defp add_hint(%{hints: hints} = env, hint) do
     if hint in hints, do: env, else: %{env | hints: [hint | hints]}
   end
 
-  # The left side is only escaped if it is a value
   defp maybe_escape(other, %{context: :match}), do: other
   defp maybe_escape(other, _env), do: escape(other)
 
-  # We escape it by wrapping it in one element tuple which is not valid AST
+  # We escape container types to make a distinction between AST
+  # and values that should be inspected. All other values have no
+  # special AST representation, so we can keep them as is.
   defp escape(other) when is_list(other) or is_tuple(other), do: {other}
   defp escape(other), do: other
 
   defp escape_pair({key, value}), do: {escape(key), escape(value)}
-
-  defp unescape({other}), do: other
-  defp unescape(other), do: other
 
   defp merge_diff(%__MODULE__{} = result1, %__MODULE__{} = result2, fun) do
     {left, right} = fun.(result1.left, result2.left, result1.right, result2.right)

@@ -17,11 +17,11 @@ defmodule Mix.Tasks.Profile.Eprof do
 
   To profile the code, you can use syntax similar to the `mix run` task:
 
-      mix profile.eprof -e Hello.world
-      mix profile.eprof -e "[1, 2, 3] |> Enum.reverse |> Enum.map(&Integer.to_string/1)"
-      mix profile.eprof my_script.exs arg1 arg2 arg3
+      $ mix profile.eprof -e Hello.world
+      $ mix profile.eprof -e "[1, 2, 3] |> Enum.reverse |> Enum.map(&Integer.to_string/1)"
+      $ mix profile.eprof my_script.exs arg1 arg2 arg3
 
-  This task is automatically reenabled, so you can profile multiple times
+  This task is automatically re-enabled, so you can profile multiple times
   in the same Mix invocation.
 
   ## Command line options
@@ -76,7 +76,7 @@ defmodule Mix.Tasks.Profile.Eprof do
 
   The pattern can be a module name, such as `String` to count all calls to that module,
   a call without arity, such as `String.split`, to count all calls to that function
-  regardless of arity, or a call with arity, such as `String.split/2`, to count all
+  regardless of arity, or a call with arity, such as `String.split/3`, to count all
   calls to that exact module, function and arity.
 
   ## Caveats
@@ -171,6 +171,8 @@ defmodule Mix.Tasks.Profile.Eprof do
   @doc """
   Allows to programmatically run the `eprof` profiler on expression in `fun`.
 
+  Returns the return value of `fun`.
+
   ## Options
 
     * `:matching` - only profile calls matching the given pattern in form of
@@ -181,10 +183,12 @@ defmodule Mix.Tasks.Profile.Eprof do
     * `:sort` - sort the results by `:time` or `:calls` (default: `:time`)
 
   """
+  @spec profile((-> any()), keyword()) :: any()
   def profile(fun, opts \\ []) when is_function(fun, 0) do
-    fun
-    |> profile_and_analyse(opts)
-    |> print_output()
+    Mix.ensure_application!(:tools)
+    {return_value, results} = profile_and_analyse(fun, opts)
+    print_output(results)
+    return_value
   end
 
   defp profile_and_analyse(fun, opts) do
@@ -194,7 +198,7 @@ defmodule Mix.Tasks.Profile.Eprof do
     end
 
     :eprof.start()
-    :eprof.profile([], fun, Keyword.get(opts, :matching, {:_, :_, :_}))
+    {:ok, return_value} = :eprof.profile([], fun, Keyword.get(opts, :matching, {:_, :_, :_}))
 
     results =
       Enum.map(:eprof.dump(), fn {pid, call_results} ->
@@ -209,7 +213,7 @@ defmodule Mix.Tasks.Profile.Eprof do
 
     :eprof.stop()
 
-    results
+    {return_value, results}
   end
 
   defp filter_results(call_results, opts) do

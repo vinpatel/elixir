@@ -1,13 +1,13 @@
 -module(elixir_erl_for).
--export([translate/4]).
+-export([translate/3]).
 -include("elixir.hrl").
 
-translate(Meta, Args, Return, S) ->
+translate(Meta, Args, S) ->
   {Cases, [{do, Expr} | Opts]} = elixir_utils:split_last(Args),
 
   case lists:keyfind(reduce, 1, Opts) of
     {reduce, Reduce} -> translate_reduce(Meta, Cases, Expr, Reduce, S);
-    false -> translate_into(Meta, Cases, Expr, Opts, Return, S)
+    false -> translate_into(Meta, Cases, Expr, Opts, S)
   end.
 
 translate_reduce(Meta, Cases, Expr, Reduce, S) ->
@@ -23,13 +23,12 @@ translate_reduce(Meta, Cases, Expr, Reduce, S) ->
 
   build_reduce(Ann, TCases, InnerFun, TExpr, TReduce, false, SE).
 
-translate_into(Meta, Cases, Expr, Opts, Return, S) ->
+translate_into(Meta, Cases, Expr, Opts, S) ->
   Ann = ?ann(Meta),
 
   {TInto, SI} =
     case lists:keyfind(into, 1, Opts) of
       {into, Into} -> elixir_erl_pass:translate(Into, Ann, S);
-      false when Return -> {{nil, Ann}, S};
       false -> {false, S}
     end,
 
@@ -116,6 +115,15 @@ build_inline(Ann, Clauses, Expr, Into, Uniq, S) ->
 build_inline_each(Ann, Clauses, Expr, false, Uniq, S) ->
   InnerFun = fun(InnerExpr, _InnerAcc) -> InnerExpr end,
   build_reduce(Ann, Clauses, InnerFun, Expr, {nil, Ann}, Uniq, S);
+build_inline_each(Ann, [{enum, _, Left = {var, _, _}, Right, [] = _Filters}], Expr, {nil, _} = _Into, false, S) ->
+  Clauses = [{clause, Ann, [Left], [], [Expr]}],
+  Args = [Right, {'fun', Ann, {clauses, Clauses}}],
+  {?remote(Ann, 'Elixir.Enum', map, Args), S};
+build_inline_each(Ann, [{enum, _, Left = {var, _, _}, Right, [] = _Filters}], Expr, {map, _, []} = _Into, false, S) ->
+  Clauses = [{clause, Ann, [Left], [], [Expr]}],
+  Args = [Right, {'fun', Ann, {clauses, Clauses}}],
+  List = ?remote(Ann, 'Elixir.Enum', map, Args),
+  {?remote(Ann, maps, from_list, [List]), S};
 build_inline_each(Ann, Clauses, Expr, {nil, _} = Into, Uniq, S) ->
   InnerFun = fun(InnerExpr, InnerAcc) -> {cons, Ann, InnerExpr, InnerAcc} end,
   {ReduceExpr, SR} = build_reduce(Ann, Clauses, InnerFun, Expr, Into, Uniq, S),
@@ -337,10 +345,10 @@ join_filter(Ann, {nil, Filter}, True, False) ->
     {clause, Ann, [{atom, Ann, false}], [], [False]}
   ]};
 join_filter(Ann, {Var, Filter}, True, False) ->
-  Guards = [
-    [{op, Ann, '==', Var, {atom, Ann, false}}],
-    [{op, Ann, '==', Var, {atom, Ann, nil}}]
-  ],
+  Guards = [[{op, Ann, 'orelse',
+    {op, Ann, '==', Var, {atom, Ann, false}},
+    {op, Ann, '==', Var, {atom, Ann, nil}}
+  }]],
 
   {'case', Ann, Filter, [
     {clause, Ann, [Var], Guards, [False]},

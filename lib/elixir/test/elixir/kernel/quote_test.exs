@@ -21,7 +21,7 @@ defmodule Kernel.QuoteTest do
     line = __ENV__.line + 2
 
     assert quote(location: :keep, do: bar(1, 2, 3)) ==
-             {:bar, [keep: {Path.relative_to_cwd(__ENV__.file), line}], [1, 2, 3]}
+             {:bar, [keep: {__ENV__.file, line}], [1, 2, 3]}
   end
 
   test "fixed line" do
@@ -227,7 +227,7 @@ defmodule Kernel.QuoteTest do
                 () -> 1
               end)
 
-    assert [{:->, _, [[], 1]}] = quote(do: (() -> 1))
+    assert [{:->, _, [[], 1]}] = quote(do: (-> 1))
   end
 
   test "empty block" do
@@ -322,9 +322,21 @@ defmodule Kernel.QuoteTest do
                 end
               end)
   end
+
+  test "capture" do
+    assert Code.string_to_quoted!("&1[:foo]") == Code.string_to_quoted!("(&1)[:foo]")
+    assert Code.string_to_quoted!("&1 [:foo]") == Code.string_to_quoted!("(&1)[:foo]")
+    assert Code.string_to_quoted!("& 1[:foo]") == Code.string_to_quoted!("&(1[:foo])")
+  end
+
+  test "not and ! as rearrange ops" do
+    assert {:__block__, _, [{:not, [line: 1], [true]}]} = Code.string_to_quoted!("(not true)")
+
+    assert {:fn, _, [{:->, _, [[], {:not, _, [true]}]}]} =
+             Code.string_to_quoted!("fn -> not true end")
+  end
 end
 
-# DO NOT MOVE THIS LINE
 defmodule Kernel.QuoteTest.Errors do
   def line, do: __ENV__.line + 4
 
@@ -562,25 +574,32 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
 
   defmacrop get_list_length do
     quote do
-      length('hello')
+      length(~c"hello")
+    end
+  end
+
+  defmacrop get_list_length_with_pipe do
+    quote do
+      ~c"hello" |> length()
     end
   end
 
   defmacrop get_list_length_with_partial do
     quote do
-      (&length(&1)).('hello')
+      (&length(&1)).(~c"hello")
     end
   end
 
   defmacrop get_list_length_with_function do
     quote do
-      (&length/1).('hello')
+      (&length/1).(~c"hello")
     end
   end
 
   test "expand imports" do
     import Kernel, except: [length: 1]
     assert get_list_length() == 5
+    assert get_list_length_with_pipe() == 5
     assert get_list_length_with_partial() == 5
     assert get_list_length_with_function() == 5
   end
@@ -601,7 +620,7 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
 
   test "lazy expand imports no conflicts" do
     import Kernel, except: [length: 1]
-    import String, only: [length: 1]
+    import String, only: [length: 1], warn: false
 
     assert get_list_length() == 5
     assert get_list_length_with_partial() == 5
@@ -612,7 +631,7 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
     quote do
       import Kernel, except: [length: 1]
       import String, only: [length: 1]
-      length('hello')
+      length(~c"hello")
     end
   end
 
@@ -631,6 +650,6 @@ defmodule Kernel.QuoteTest.ImportsHygieneTest do
   test "checks the context also for variables to zero-arity functions" do
     import BinaryUtils
     {:int32, meta, __MODULE__} = quote(do: int32)
-    assert meta[:import] == BinaryUtils
+    assert meta[:imports] == [{0, BinaryUtils}]
   end
 end

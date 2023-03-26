@@ -71,21 +71,19 @@ defmodule Kernel.RaiseTest do
     end
   end
 
-  if :erlang.system_info(:otp_release) >= '24' do
-    test "raise with error_info" do
-      {exception, stacktrace} =
-        try do
-          raise "a"
-        rescue
-          e -> {e, __STACKTRACE__}
-        end
+  test "raise with error_info" do
+    {exception, stacktrace} =
+      try do
+        raise "a"
+      rescue
+        e -> {e, __STACKTRACE__}
+      end
 
-      assert [{__MODULE__, _, _, meta} | _] = stacktrace
-      assert meta[:error_info] == %{module: Exception}
+    assert [{__MODULE__, _, _, meta} | _] = stacktrace
+    assert meta[:error_info] == %{module: Exception}
 
-      assert Exception.format_error(exception, stacktrace) ==
-               %{general: "a", reason: "#Elixir.RuntimeError"}
-    end
+    assert Exception.format_error(exception, stacktrace) ==
+             %{general: "a", reason: "#Elixir.RuntimeError"}
   end
 
   test "reraise message" do
@@ -305,6 +303,21 @@ defmodule Kernel.RaiseTest do
 
       assert result == "an exception"
     end
+
+    defmacrop argerr(e) do
+      quote(do: unquote(e) in ArgumentError)
+    end
+
+    test "with rescue macro" do
+      result =
+        try do
+          raise ArgumentError, "oops, badarg"
+        rescue
+          argerr(e) -> Exception.message(e)
+        end
+
+      assert result == "oops, badarg"
+    end
   end
 
   describe "normalize" do
@@ -411,6 +424,7 @@ defmodule Kernel.RaiseTest do
       fun = BadFunction.Missing.fun()
 
       :code.delete(BadFunction.Missing)
+      :code.purge(BadFunction.Missing)
 
       defmodule BadFunction.Missing do
         def fun, do: fn -> :another end

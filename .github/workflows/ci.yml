@@ -1,6 +1,12 @@
 name: CI
 
-on: [pull_request, push]
+on:
+  push:
+    paths-ignore:
+      - 'lib/**/*.md'
+  pull_request:
+    paths-ignore:
+      - 'lib/**/*.md'
 
 env:
   ELIXIR_ASSERT_TIMEOUT: 2000
@@ -8,74 +14,84 @@ env:
   ERLC_OPTS: "warnings_as_errors"
   LANG: C.UTF-8
 
+permissions:
+  contents: read
+
 jobs:
   test_linux:
-    name: Linux, ${{ matrix.otp_release }}, Ubuntu 18.04
+    name: Ubuntu 20.04, Erlang/OTP ${{ matrix.otp_version }}
     strategy:
       fail-fast: false
       matrix:
-        otp_release: ['OTP-24.0', 'OTP-23.3', 'OTP-23.0']
-        development: [false]
         include:
-          - otp_release: master
+          - otp_version: 25.0
+            otp_latest: true
+          - otp_version: 24.3
+          - otp_version: 24.0
+          - otp_version: master
             development: true
-          - otp_release: maint
+          - otp_version: maint
             development: true
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           fetch-depth: 50
-      - name: Install Erlang/OTP
-        run: |
-          cd $RUNNER_TEMP
-          wget -O otp.tar.gz https://repo.hex.pm/builds/otp/ubuntu-18.04/${{ matrix.otp_release }}.tar.gz
-          mkdir -p otp
-          tar zxf otp.tar.gz -C otp --strip-components=1
-          otp/Install -minimal $(pwd)/otp
-          echo "$(pwd)/otp/bin" >> $GITHUB_PATH
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp_version }}
       - name: Compile Elixir
         run: |
-          rm -rf .git
           make compile
+          echo "$PWD/bin" >> $GITHUB_PATH
       - name: Build info
         run: bin/elixir --version
       - name: Check format
         run: make test_formatted && echo "All Elixir source code files are properly formatted."
       - name: Run Dialyzer
         run: dialyzer -pa lib/elixir/ebin --build_plt --output_plt elixir.plt --apps lib/elixir/ebin/elixir.beam lib/elixir/ebin/Elixir.Kernel.beam
+        continue-on-error: ${{ matrix.development }}
       - name: Erlang test suite
         run: make test_erlang
         continue-on-error: ${{ matrix.development }}
       - name: Elixir test suite
         run: make test_elixir
         continue-on-error: ${{ matrix.development }}
+      - name: Build docs (ExDoc main)
+        if: ${{ matrix.otp_latest }}
+        run: |
+          cd ..
+          git clone https://github.com/elixir-lang/ex_doc.git --depth 1
+          cd ex_doc
+          ../elixir/bin/mix do local.rebar --force + local.hex --force + deps.get + compile
+          cd ../elixir/
+          make docs
       - name: Check reproducible builds
-        run: taskset 1 make check_reproducible
-        if: matrix.otp_release == 'OTP-24.0'
+        run: |
+          rm -rf .git
+          # Recompile System without .git
+          cd lib/elixir && ../../bin/elixirc -o ebin lib/system.ex && cd -
+          taskset 1 make check_reproducible
+        if: ${{ matrix.otp_latest }}
 
   test_windows:
-    name: Windows, OTP-${{ matrix.otp_release }}, Windows Server 2019
+    name: Windows Server 2019, Erlang/OTP ${{ matrix.otp_version }}
     strategy:
       matrix:
-        otp_release: ['23.3']
+        otp_version: ['24', '25']
     runs-on: windows-2019
     steps:
       - name: Configure Git
         run: git config --global core.autocrlf input
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           fetch-depth: 50
-      - name: Cache Erlang/OTP package
-        uses: actions/cache@v2
+      - uses: erlef/setup-beam@v1
         with:
-          path: C:\Users\runneradmin\AppData\Local\Temp\chocolatey\erlang
-          key: OTP-${{ matrix.otp_release }}-windows-2019
-      - name: Install Erlang/OTP
-        run: choco install -y erlang --version ${{ matrix.otp_release }}
+          otp-version: ${{ matrix.otp_version }}
       - name: Compile Elixir
         run: |
-          remove-item '.git' -recurse -force
+          Remove-Item -Recurse -Force '.git'
           make compile
       - name: Build info
         run: bin/elixir --version
@@ -85,14 +101,14 @@ jobs:
         run: make --keep-going test_erlang
       - name: Elixir test suite
         run: |
-          del c:/Windows/System32/drivers/etc/hosts
+          Remove-Item 'c:/Windows/System32/drivers/etc/hosts'
           make --keep-going test_elixir
 
   check_posix_compliant:
     name: Check POSIX-compliant
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
           fetch-depth: 50
       - name: Install Shellcheck

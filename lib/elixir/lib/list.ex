@@ -8,7 +8,7 @@ defmodule List do
       [1, "two", 3, :four]
 
   Two lists can be concatenated and subtracted using the
-  `Kernel.++/2` and `Kernel.--/2` operators:
+  `++/2` and `--/2` operators:
 
       iex> [1, 2, 3] ++ [4, 5, 6]
       [1, 2, 3, 4, 5, 6]
@@ -84,23 +84,23 @@ defmodule List do
     * and be out of the range `0xD800..0xDFFF` (`55_296..57_343`), which is
       reserved in Unicode for UTF-16 surrogate pairs.
 
-  Elixir uses single quotes to define charlists:
+  Elixir uses the [`~c` sigil](`sigil_c/2`) to define charlists:
 
-      iex> 'héllo'
+      iex> ~c"héllo"
       [104, 233, 108, 108, 111]
 
-  In particular, charlists will be printed back by default in single
-  quotes if they contain only printable ASCII characters:
+  In particular, charlists will be printed back by default with the `~c`
+  sigil if they contain only printable ASCII characters:
 
-      iex> 'abc'
-      'abc'
+      iex> ~c"abc"
+      ~c"abc"
 
   Even though the representation changed, the raw data does remain a list of
-  numbers, which can be handled as such:
+  integers, which can be handled as such:
 
-      iex> inspect('abc', charlists: :as_list)
+      iex> inspect(~c"abc", charlists: :as_list)
       "[97, 98, 99]"
-      iex> Enum.map('abc', fn num -> 1000 + num end)
+      iex> Enum.map(~c"abc", fn num -> 1000 + num end)
       [1097, 1098, 1099]
 
   You can use the `IEx.Helpers.i/1` helper to get a condensed rundown on
@@ -115,11 +115,11 @@ defmodule List do
 
       Application.loaded_applications()
       #=>  [
-      #=>    {:stdlib, 'ERTS  CXC 138 10', '2.6'},
-      #=>    {:compiler, 'ERTS  CXC 138 10', '6.0.1'},
-      #=>    {:elixir, 'elixir', '1.0.0'},
-      #=>    {:kernel, 'ERTS  CXC 138 10', '4.1'},
-      #=>    {:logger, 'logger', '1.0.0'}
+      #=>    {:stdlib, ~c"ERTS  CXC 138 10", ~c"2.6"},
+      #=>    {:compiler, ~c"ERTS  CXC 138 10", ~c"6.0.1"},
+      #=>    {:elixir, ~c"elixir", ~c"1.0.0"},
+      #=>    {:kernel, ~c"ERTS  CXC 138 10", ~c"4.1"},
+      #=>    {:logger, ~c"logger", ~c"1.0.0"}
       #=>  ]
 
   A list can be checked if it is made of only printable ASCII
@@ -239,7 +239,7 @@ defmodule List do
 
       iex> List.foldl([1, 2, 3, 4], 0, fn x, acc -> x - acc end)
       2
-      
+
       iex> List.foldl([1, 2, 3], {0, 0}, fn x, {a1, a2} -> {a1 + x, a2 - x} end)
       {6, -6}
 
@@ -257,7 +257,7 @@ defmodule List do
 
       iex> List.foldr([1, 2, 3, 4], 0, fn x, acc -> x - acc end)
       -2
-      
+
       iex> List.foldr([1, 2, 3, 4], %{sum: 0, product: 1}, fn x, %{sum: a1, product: a2} -> %{sum: a1 + x, product: a2 * x} end)
       %{product: 24, sum: 10}
 
@@ -339,6 +339,11 @@ defmodule List do
       iex> List.keyfind([a: 1, b: 2], :c, 0)
       nil
 
+  This function works for any list of tuples:
+
+      iex> List.keyfind([{22, "SSH"}, {80, "HTTP"}], 22, 0)
+      {22, "SSH"}
+
   """
   @spec keyfind([tuple], any, non_neg_integer, any) :: any
   def keyfind(list, key, position, default \\ nil) when is_integer(position) do
@@ -362,6 +367,11 @@ defmodule List do
 
       iex> List.keyfind!([a: 1, b: 2], :c, 0)
       ** (KeyError) key :c at position 0 not found in: [a: 1, b: 2]
+
+  This function works for any list of tuples:
+
+      iex> List.keyfind!([{22, "SSH"}, {80, "HTTP"}], 22, 0)
+      {22, "SSH"}
 
   """
   @doc since: "1.13.0"
@@ -391,6 +401,11 @@ defmodule List do
       iex> List.keymember?([a: 1, b: 2], :c, 0)
       false
 
+  This function works for any list of tuples:
+
+      iex> List.keymember?([{22, "SSH"}, {80, "HTTP"}], 22, 0)
+      true
+
   """
   @spec keymember?([tuple], any, non_neg_integer) :: boolean
   def keymember?(list, key, position) when is_integer(position) do
@@ -408,6 +423,11 @@ defmodule List do
 
       iex> List.keyreplace([a: 1, b: 2], :a, 1, {:a, 3})
       [a: 1, b: 2]
+
+  This function works for any list of tuples:
+
+      iex> List.keyreplace([{22, "SSH"}, {80, "HTTP"}], 22, 0, {22, "Secure Shell"})
+      [{22, "Secure Shell"}, {80, "HTTP"}]
 
   """
   @spec keyreplace([tuple], any, non_neg_integer, tuple) :: [tuple]
@@ -465,6 +485,7 @@ defmodule List do
       ]
 
   """
+  @doc since: "1.14.0"
   @spec keysort(
           [tuple],
           non_neg_integer,
@@ -482,9 +503,6 @@ defmodule List do
 
   defp keysort_fun(sorter, position) when is_function(sorter, 2),
     do: &sorter.(:erlang.element(position, &1), :erlang.element(position, &2))
-
-  defp keysort_fun(:asc, position),
-    do: &(:erlang.element(position, &1) <= :erlang.element(position, &2))
 
   defp keysort_fun(:desc, position),
     do: &(:erlang.element(position, &1) >= :erlang.element(position, &2))
@@ -512,6 +530,11 @@ defmodule List do
       iex> List.keystore([a: 1, b: 2], :c, 0, {:c, 3})
       [a: 1, b: 2, c: 3]
 
+  This function works for any list of tuples:
+
+      iex> List.keystore([{22, "SSH"}], 80, 0, {80, "HTTP"})
+      [{22, "SSH"}, {80, "HTTP"}]
+
   """
   @spec keystore([tuple], any, non_neg_integer, tuple) :: [tuple, ...]
   def keystore(list, key, position, new_tuple) when is_integer(position) do
@@ -533,6 +556,11 @@ defmodule List do
 
       iex> List.keydelete([a: 1, b: 2], :c, 0)
       [a: 1, b: 2]
+
+  This function works for any list of tuples:
+
+      iex> List.keydelete([{22, "SSH"}, {80, "HTTP"}], 80, 0)
+      [{22, "SSH"}]
 
   """
   @spec keydelete([tuple], any, non_neg_integer) :: [tuple]
@@ -557,6 +585,11 @@ defmodule List do
 
       iex> List.keytake([a: 1, b: 2], :c, 0)
       nil
+
+  This function works for any list of tuples:
+
+      iex> List.keytake([{22, "SSH"}, {80, "HTTP"}], 80, 0)
+      {{80, "HTTP"}, [{22, "SSH"}]}
 
   """
   @spec keytake([tuple], any, non_neg_integer) :: {tuple, [tuple]} | nil
@@ -645,18 +678,18 @@ defmodule List do
 
   ## Examples
 
-      iex> List.ascii_printable?('abc')
+      iex> List.ascii_printable?(~c"abc")
       true
 
-      iex> List.ascii_printable?('abc' ++ [0])
+      iex> List.ascii_printable?(~c"abc" ++ [0])
       false
 
-      iex> List.ascii_printable?('abc' ++ [0], 2)
+      iex> List.ascii_printable?(~c"abc" ++ [0], 2)
       true
 
   Improper lists are not printable, even if made only of ASCII characters:
 
-      iex> List.ascii_printable?('abc' ++ ?d)
+      iex> List.ascii_printable?(~c"abc" ++ ?d)
       false
 
   """
@@ -901,10 +934,10 @@ defmodule List do
 
   ## Examples
 
-      iex> List.to_atom('Elixir')
+      iex> List.to_atom(~c"Elixir")
       :Elixir
 
-      iex> List.to_atom('🌢 Elixir')
+      iex> List.to_atom(~c"🌢 Elixir")
       :"🌢 Elixir"
 
   """
@@ -914,22 +947,30 @@ defmodule List do
   end
 
   @doc """
-  Converts a charlist to an existing atom. Raises an `ArgumentError`
-  if the atom does not exist.
+  Converts a charlist to an existing atom.
 
   Elixir supports conversions from charlists which contains any Unicode
-  code point.
+  code point. Raises an `ArgumentError` if the atom does not exist.
 
   Inlined by the compiler.
+
+  > #### Atoms and modules {: .info}
+  >
+  > Since Elixir is a compiled language, the atoms defined in a module
+  > will only exist after said module is loaded, which typically happens
+  > whenever a function in the module is executed. Therefore, it is
+  > generally recommended to call `List.to_existing_atom/1` only to
+  > convert atoms defined within the module making the function call
+  > to `to_existing_atom/1`.
 
   ## Examples
 
       iex> _ = :my_atom
-      iex> List.to_existing_atom('my_atom')
+      iex> List.to_existing_atom(~c"my_atom")
       :my_atom
 
       iex> _ = :"🌢 Elixir"
-      iex> List.to_existing_atom('🌢 Elixir')
+      iex> List.to_existing_atom(~c"🌢 Elixir")
       :"🌢 Elixir"
 
   """
@@ -945,7 +986,7 @@ defmodule List do
 
   ## Examples
 
-      iex> List.to_float('2.2017764e+0')
+      iex> List.to_float(~c"2.2017764e+0")
       2.2017764
 
   """
@@ -961,7 +1002,7 @@ defmodule List do
 
   ## Examples
 
-      iex> List.to_integer('123')
+      iex> List.to_integer(~c"123")
       123
 
   """
@@ -979,7 +1020,7 @@ defmodule List do
 
   ## Examples
 
-      iex> List.to_integer('3FF', 16)
+      iex> List.to_integer(~c"3FF", 16)
       1023
 
   """
@@ -1027,7 +1068,7 @@ defmodule List do
       iex> List.to_string([0x0061, "bc"])
       "abc"
 
-      iex> List.to_string([0x0064, "ee", ['p']])
+      iex> List.to_string([0x0064, "ee", [~c"p"]])
       "deep"
 
       iex> List.to_string([])
@@ -1076,14 +1117,14 @@ defmodule List do
 
   ## Examples
 
-      iex> List.to_charlist([0x00E6, 0x00DF])
-      'æß'
+      iex> ~c"æß" = List.to_charlist([0x00E6, 0x00DF])
+      [230, 223]
 
       iex> List.to_charlist([0x0061, "bc"])
-      'abc'
+      ~c"abc"
 
-      iex> List.to_charlist([0x0064, "ee", ['p']])
-      'deep'
+      iex> List.to_charlist([0x0064, "ee", [~c"p"]])
+      ~c"deep"
 
   """
   @doc since: "1.8.0"

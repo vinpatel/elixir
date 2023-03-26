@@ -62,7 +62,7 @@ defmodule IEx.InfoTest do
 
   describe "lists" do
     test "charlists" do
-      info = Info.info('foo')
+      info = Info.info(~c"foo")
       assert get_key(info, "Description") =~ "This is a list of integers that is printed"
       assert get_key(info, "Raw representation") == "[102, 111, 111]"
     end
@@ -170,7 +170,7 @@ defmodule IEx.InfoTest do
       assert get_key(info, "Data type") == "Date"
 
       assert get_key(info, "Raw representation") ==
-               "%Date{calendar: Calendar.ISO, day: 1, month: 1, year: 2017}"
+               "%Date{year: 2017, month: 1, day: 1, calendar: Calendar.ISO}"
 
       assert get_key(info, "Reference modules") == "Date, Calendar, Map"
       assert get_key(info, "Description") =~ "a date"
@@ -183,11 +183,26 @@ defmodule IEx.InfoTest do
       assert get_key(info, "Data type") == "Time"
 
       assert get_key(info, "Raw representation") ==
-               "%Time{calendar: Calendar.ISO, hour: 23, microsecond: {0, 0}, minute: 59, second: 59}"
+               "%Time{hour: 23, minute: 59, second: 59, microsecond: {0, 0}, calendar: Calendar.ISO}"
 
       assert get_key(info, "Reference modules") == "Time, Calendar, Map"
       assert get_key(info, "Description") =~ "a time"
       assert get_key(info, "Description") =~ "`~T`"
+    end
+
+    test "datetime" do
+      {:ok, date} = Date.new(2017, 1, 1)
+      {:ok, time} = Time.new(23, 59, 59)
+      {:ok, date_time} = DateTime.new(date, time)
+      info = Info.info(date_time)
+      assert get_key(info, "Data type") == "DateTime"
+
+      assert get_key(info, "Raw representation") ==
+               "%DateTime{year: 2017, month: 1, day: 1, hour: 23, minute: 59, second: 59, time_zone: \"Etc/UTC\", zone_abbr: \"UTC\", utc_offset: 0, std_offset: 0, microsecond: {0, 0}, calendar: Calendar.ISO}"
+
+      assert get_key(info, "Reference modules") == "DateTime, Calendar, Map"
+      assert get_key(info, "Description") =~ "a datetime"
+      assert get_key(info, "Description") =~ "`~U`"
     end
 
     test "naive datetime" do
@@ -196,7 +211,7 @@ defmodule IEx.InfoTest do
       assert get_key(info, "Data type") == "NaiveDateTime"
 
       assert get_key(info, "Raw representation") ==
-               "%NaiveDateTime{calendar: Calendar.ISO, day: 1, hour: 23, microsecond: {0, 0}, minute: 59, month: 1, second: 59, year: 2017}"
+               "%NaiveDateTime{year: 2017, month: 1, day: 1, hour: 23, minute: 59, second: 59, microsecond: {0, 0}, calendar: Calendar.ISO}"
 
       assert get_key(info, "Reference modules") == "NaiveDateTime, Calendar, Map"
 
@@ -205,6 +220,22 @@ defmodule IEx.InfoTest do
 
       assert get_key(info, "Description") =~ "`~N`"
     end
+  end
+
+  test "Regex" do
+    info = Info.info(~r/(ab)+c/)
+    assert get_key(info, "Data type") == "Regex"
+    assert get_key(info, "Description")
+    assert get_key(info, "Raw representation") =~ "%Regex{re_pattern: {:re_pattern, "
+    assert get_key(info, "Reference modules") == "Regex, :re"
+  end
+
+  test "Range" do
+    info = Info.info(1..10//2)
+    assert get_key(info, "Data type") == "Range"
+    assert get_key(info, "Description")
+    assert get_key(info, "Raw representation") == "%Range{first: 1, last: 10, step: 2}"
+    assert get_key(info, "Reference modules") == "Range"
   end
 
   test "structs" do

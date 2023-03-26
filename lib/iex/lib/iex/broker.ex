@@ -10,24 +10,26 @@ defmodule IEx.Broker do
   ## Shell API
 
   @doc """
-  Finds the IEx server running inside `:user_drv`, on this node exclusively.
+  Finds the IEx server.
   """
   @spec shell :: shell()
+  # TODO: Use shell:whereis_shell() from Erlang/OTP 26+.
   def shell() do
-    # Locate top group leader when using the "new shell".
     if user = Process.whereis(:user) do
-      case :group.interfaces(user) do
-        # Old or no shell
-        [] ->
-          nil
-
-        # Get current group from user_drv
-        [user_drv: user_drv] ->
-          case :user_drv.interfaces(user_drv) do
-            [] -> nil
-            [current_group: group] -> :group.interfaces(group)[:shell]
-          end
+      if user_drv = get_from_dict(user, :user_drv) do
+        if group = get_from_dict(user_drv, :current_group) do
+          get_from_dict(group, :shell)
+        end
       end
+    end
+  end
+
+  defp get_from_dict(pid, key) do
+    with {:dictionary, dictionary} <- Process.info(pid, :dictionary),
+         {^key, value} <- List.keyfind(dictionary, key, 0) do
+      value
+    else
+      _ -> nil
     end
   end
 
@@ -63,12 +65,13 @@ defmodule IEx.Broker do
 
   The broker's PID is needed to support remote shells.
   """
-  @spec respond(pid, take_ref, boolean()) :: :ok | {:error, :refused | :already_accepted}
-  def respond(broker_pid, take_ref, true) do
-    GenServer.call(broker_pid, {:accept, take_ref, Process.group_leader()})
+  @spec respond(pid, take_ref, integer(), boolean()) ::
+          :ok | {:error, :refused | :already_accepted}
+  def respond(broker_pid, take_ref, counter, true) do
+    GenServer.call(broker_pid, {:accept, take_ref, Process.group_leader(), counter})
   end
 
-  def respond(broker_pid, take_ref, false) do
+  def respond(broker_pid, take_ref, _counter, false) do
     GenServer.call(broker_pid, {:refuse, take_ref})
   end
 
@@ -76,7 +79,8 @@ defmodule IEx.Broker do
   Client requests a takeover.
   """
   @spec take_over(binary, iodata, keyword) ::
-          {:ok, server :: pid, group_leader :: pid} | {:error, :no_iex | :refused}
+          {:ok, server :: pid, group_leader :: pid, counter :: integer}
+          | {:error, :no_iex | :refused}
   def take_over(location, whereami, opts) do
     case GenServer.whereis(@name) do
       nil ->
@@ -123,13 +127,13 @@ defmodule IEx.Broker do
     {:reply, :ok, state}
   end
 
-  def handle_call({:accept, {ref, _server_ref}, group_leader}, {server, _}, state) do
+  def handle_call({:accept, {ref, _server_ref}, group_leader, counter}, {server, _}, state) do
     case pop_in(state.takeovers[ref]) do
       {nil, state} ->
         {:reply, {:error, :already_accepted}, state}
 
       {{from, _}, state} ->
-        GenServer.reply(from, {:ok, server, group_leader})
+        GenServer.reply(from, {:ok, server, group_leader, counter})
         {:reply, :ok, state}
     end
   end

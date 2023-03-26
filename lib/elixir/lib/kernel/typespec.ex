@@ -104,7 +104,7 @@ defmodule Kernel.Typespec do
   @doc """
   Defines a typespec.
 
-  Invoked by `Kernel.@/1` expansion.
+  Invoked by `@/1` expansion.
   """
   def deftypespec(:spec, expr, _line, _file, module, pos) do
     {_set, bag} = :elixir_module.data_tables(module)
@@ -149,7 +149,7 @@ defmodule Kernel.Typespec do
           warning =
             "type #{name}/#{arity} is private, @typedoc's are always discarded for private types"
 
-          :elixir_errors.erl_warn(line, file, warning)
+          IO.warn(warning, file: file, line: line)
         end
 
       {name, arity} ->
@@ -194,14 +194,14 @@ defmodule Kernel.Typespec do
 
   defp get_doc_info(set, attr, line) do
     case :ets.take(set, attr) do
-      [{^attr, {line, doc}, _}] -> {line, doc}
+      [{^attr, {line, doc}, _, _}] -> {line, doc}
       [] -> {line, nil}
     end
   end
 
   defp get_doc_meta(spec_meta, doc_kind, set) do
     case :ets.take(set, {doc_kind, :meta}) do
-      [{{^doc_kind, :meta}, metadata, _}] -> Map.merge(metadata, spec_meta)
+      [{{^doc_kind, :meta}, metadata}] -> Map.merge(metadata, spec_meta)
       [] -> spec_meta
     end
   end
@@ -280,7 +280,7 @@ defmodule Kernel.Typespec do
     fun = fn {_kind, {name, arity} = type_pair, _line, _type, export} ->
       if not export and not :lists.member(type_pair, state.used_type_pairs) do
         %{^type_pair => {file, line}} = state.defined_type_pairs
-        :elixir_errors.erl_warn(line, file, "type #{name}/#{arity} is unused")
+        IO.warn("type #{name}/#{arity} is unused", file: file, line: line)
         false
       else
         true
@@ -332,7 +332,7 @@ defmodule Kernel.Typespec do
 
     if underspecified?(kind, arity, spec) do
       message = "@#{kind} type #{name}/#{arity} is underspecified and therefore meaningless"
-      :elixir_errors.erl_warn(caller.line, caller.file, message)
+      IO.warn(message, caller)
     end
 
     {{kind, {name, arity}, caller.line, type, export}, state}
@@ -387,8 +387,10 @@ defmodule Kernel.Typespec do
 
     line = line(meta)
     vars = Keyword.keys(guard)
-    {fun_args, state} = fn_args(meta, args, return, vars, caller, state)
-    spec = {:type, line, :fun, fun_args}
+
+    {args, state} = :lists.mapfoldl(&typespec(&1, vars, caller, &2), state, args)
+    {return, state} = typespec(return, vars, caller, state)
+    spec = {:type, line, :fun, [{:type, line, :product, args}, return]}
 
     {spec, state} =
       case guard_to_constraints(guard, vars, meta, caller, state) do
@@ -552,39 +554,46 @@ defmodule Kernel.Typespec do
     {{:type, line(meta), :map, fields}, state}
   end
 
-  defp typespec({:%, _, [name, {:%{}, meta, fields}]}, vars, caller, state) do
-    module = Macro.expand(name, %{caller | function: {:__info__, 1}})
+  defp typespec({:%, _, [name, {:%{}, meta, fields}]} = node, vars, caller, state) do
+    case Macro.expand(name, %{caller | function: {:__info__, 1}}) do
+      module when is_atom(module) ->
+        struct =
+          module
+          |> Macro.struct!(caller)
+          |> Map.delete(:__struct__)
+          |> Map.to_list()
 
-    struct =
-      module
-      |> Macro.struct!(caller)
-      |> Map.delete(:__struct__)
-      |> Map.to_list()
+        unless Keyword.keyword?(fields) do
+          compile_error(caller, "expected key-value pairs in struct #{Macro.to_string(name)}")
+        end
 
-    unless Keyword.keyword?(fields) do
-      compile_error(caller, "expected key-value pairs in struct #{Macro.to_string(name)}")
-    end
+        types =
+          :lists.map(
+            fn
+              {:__exception__ = field, true} -> {field, Keyword.get(fields, field, true)}
+              {field, _} -> {field, Keyword.get(fields, field, quote(do: term()))}
+            end,
+            :lists.sort(struct)
+          )
 
-    types =
-      :lists.map(
-        fn
-          {:__exception__ = field, true} -> {field, Keyword.get(fields, field, true)}
-          {field, _} -> {field, Keyword.get(fields, field, quote(do: term()))}
-        end,
-        :lists.sort(struct)
-      )
+        fun = fn {field, _} ->
+          unless Keyword.has_key?(struct, field) do
+            compile_error(
+              caller,
+              "undefined field #{inspect(field)} on struct #{inspect(module)}"
+            )
+          end
+        end
 
-    fun = fn {field, _} ->
-      unless Keyword.has_key?(struct, field) do
+        :lists.foreach(fun, fields)
+        typespec({:%{}, meta, [__struct__: module] ++ types}, vars, caller, state)
+
+      _ ->
         compile_error(
           caller,
-          "undefined field #{inspect(field)} on struct #{inspect(module)}"
+          "unexpected expression in typespec: #{Macro.to_string(node)}"
         )
-      end
     end
-
-    :lists.foreach(fun, fields)
-    typespec({:%{}, meta, [__struct__: module] ++ types}, vars, caller, state)
   end
 
   # Handle records
@@ -650,8 +659,16 @@ defmodule Kernel.Typespec do
   # Handle funs
   defp typespec([{:->, meta, [args, return]}], vars, caller, state)
        when is_list(args) do
-    {args, state} = fn_args(meta, args, return, vars, caller, state)
-    {{:type, line(meta), :fun, args}, state}
+    {args, state} = fn_args(meta, args, vars, caller, state)
+    {spec, state} = typespec(return, vars, caller, state)
+
+    fun_args =
+      case [args, spec] do
+        [{:type, _, :any}, {:type, _, :any, []}] -> []
+        pair -> pair
+      end
+
+    {{:type, line(meta), :fun, fun_args}, state}
   end
 
   # Handle type operator
@@ -669,7 +686,7 @@ defmodule Kernel.Typespec do
             "#{Macro.to_string(ann_type)}"
 
         # TODO: Make this an error on v2.0 and remove the code below
-        :elixir_errors.erl_warn(caller.line, caller.file, message)
+        IO.warn(message, caller)
 
         # This may be generating an invalid typespec but we need to generate it
         # to avoid breaking existing code that was valid but only broke Dialyzer
@@ -681,14 +698,24 @@ defmodule Kernel.Typespec do
     end
   end
 
-  defp typespec({:"::", meta, [left, right]} = expr, vars, caller, state) do
+  defp typespec({:"::", meta, [left, right]}, vars, caller, state) do
     message =
-      "invalid type annotation. When using the | operator to represent the union of types, " <>
-        "make sure to wrap type annotations in parentheses: #{Macro.to_string(expr)}"
+      "invalid type annotation. The left side of :: must be a variable, got: #{Macro.to_string(left)}"
+
+    message =
+      case left do
+        {:|, _, _} ->
+          message <>
+            ". Note \"left | right :: ann\" is the same as \"(left | right) :: ann\". " <>
+            "To solve this, use parentheses around the union operands: \"left | (right :: ann)\""
+
+        _ ->
+          message
+      end
 
     # TODO: Make this an error on v2.0, and remove the code below and
     # the :undefined_type_error_enabled? key from the state
-    :elixir_errors.erl_warn(caller.line, caller.file, message)
+    IO.warn(message, caller)
 
     # This may be generating an invalid typespec but we need to generate it
     # to avoid breaking existing code that was valid but only broke Dialyzer
@@ -785,7 +812,7 @@ defmodule Kernel.Typespec do
         "For character lists, use charlist() type, for strings, String.t()\n" <>
         Exception.format_stacktrace(Macro.Env.stacktrace(caller))
 
-    :elixir_errors.erl_warn(caller.line, caller.file, warning)
+    IO.warn(warning, caller)
     {args, state} = :lists.mapfoldl(&typespec(&1, vars, caller, &2), state, args)
     {{:type, line(meta), :string, args}, state}
   end
@@ -796,7 +823,7 @@ defmodule Kernel.Typespec do
         "For non-empty character lists, use nonempty_charlist() type, for strings, String.t()\n" <>
         Exception.format_stacktrace(Macro.Env.stacktrace(caller))
 
-    :elixir_errors.erl_warn(caller.line, caller.file, warning)
+    IO.warn(warning, caller)
     {args, state} = :lists.mapfoldl(&typespec(&1, vars, caller, &2), state, args)
     {{:type, line(meta), :nonempty_string, args}, state}
   end
@@ -804,7 +831,7 @@ defmodule Kernel.Typespec do
   defp typespec({type, _meta, []}, vars, caller, state) when type in [:charlist, :char_list] do
     if type == :char_list do
       warning = "the char_list() type is deprecated, use charlist()"
-      :elixir_errors.erl_warn(caller.line, caller.file, warning)
+      IO.warn(warning, caller)
     end
 
     typespec(quote(do: :elixir.charlist()), vars, caller, state)
@@ -831,7 +858,15 @@ defmodule Kernel.Typespec do
     {{:type, line(meta), :fun, args}, state}
   end
 
-  defp typespec({name, meta, args}, vars, caller, state) do
+  defp typespec({:..., _meta, _args}, _vars, caller, _state) do
+    compile_error(
+      caller,
+      "... in typespecs is only allowed inside lists, as in [term(), ...], " <>
+        "or inside functions, as in (... -> term())"
+    )
+  end
+
+  defp typespec({name, meta, args}, vars, caller, state) when is_atom(name) do
     {args, state} = :lists.mapfoldl(&typespec(&1, vars, caller, &2), state, args)
     arity = length(args)
 
@@ -923,7 +958,7 @@ defmodule Kernel.Typespec do
   defp expand_remote(other, env), do: Macro.expand(other, env)
 
   defp compile_error(caller, desc) do
-    raise CompileError, file: caller.file, line: caller.line, description: desc
+    raise Kernel.TypespecError, file: caller.file, line: caller.line, description: desc
   end
 
   defp remote_type({remote, meta, name, args}, vars, caller, state) do
@@ -958,16 +993,6 @@ defmodule Kernel.Typespec do
         "with the left side lower than the right side"
 
     compile_error(caller, message)
-  end
-
-  defp fn_args(meta, args, return, vars, caller, state) do
-    {fun_args, state} = fn_args(meta, args, vars, caller, state)
-    {spec, state} = typespec(return, vars, caller, state)
-
-    case [fun_args, spec] do
-      [{:type, _, :any}, {:type, _, :any, []}] -> {[], state}
-      x -> {x, state}
-    end
   end
 
   defp fn_args(meta, [{:..., _, _}], _vars, _caller, state) do
@@ -1020,7 +1045,7 @@ defmodule Kernel.Typespec do
               "variable should be ignored. If this is intended please rename the variable to " <>
               "remove the underscore"
 
-          :elixir_errors.erl_warn(caller.line, caller.file, warning)
+          IO.warn(warning, caller)
 
         {_, :used_once} ->
           compile_error(

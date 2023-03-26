@@ -20,6 +20,9 @@ defmodule ExUnit.Case do
       It should be enabled only if tests do not change any global state.
       Defaults to `false`.
 
+    * `:register` - when `false`, does not register this module within
+      ExUnit server. This means the module won't run when ExUnit suite runs.
+
   This module automatically includes all callbacks defined in
   `ExUnit.Callbacks`. See that module for more information on `setup`,
   `start_supervised`, `on_exit` and the test process life cycle.
@@ -140,19 +143,25 @@ defmodule ExUnit.Case do
   The following tags are set automatically by ExUnit and are
   therefore reserved:
 
-    * `:module`     - the module on which the test was defined
+    * `:module` - the module on which the test was defined
 
-    * `:file`       - the file on which the test was defined
+    * `:file` - the file on which the test was defined
 
-    * `:line`       - the line on which the test was defined
+    * `:line` - the line on which the test was defined
 
-    * `:test`       - the test name
+    * `:test` - the test name
 
-    * `:async`      - if the test case is in async mode
+    * `:async` - if the test case is in async mode
 
     * `:registered` - used for `ExUnit.Case.register_attribute/3` values
 
-    * `:describe`   - the describe block the test belongs to
+    * `:describe` - the describe block the test belongs to
+
+    * `:describe_line` - the line the describe block begins on
+
+    * `:doctest` - the module or the file being doctested (if a doctest)
+
+    * `:doctest_line` - the line the doctest was defined (if a doctest)
 
   The following tags customize how tests behave:
 
@@ -165,8 +174,8 @@ defmodule ExUnit.Case do
 
     * `:tmp_dir` - (since v1.11.0) see the "Tmp Dir" section below
 
-  The `:test_type` tag is automatically set by ExUnit, but is **not** reserved.
-  This tag is available for users to customize if they desire.
+    * `:test_type` - the test type used when printing test results.
+      It is set by ExUnit to `:test`, `:doctest` and so on, but is customizable.
 
   ## Filters
 
@@ -182,7 +191,7 @@ defmodule ExUnit.Case do
   set to `true`. This behaviour can be reversed with the `:include` option
   which is usually passed through the command line:
 
-      mix test --include external:true
+      $ mix test --include external:true
 
   Run `mix help test` for more information on how to run filters via Mix.
 
@@ -253,11 +262,6 @@ defmodule ExUnit.Case do
 
   @doc false
   defmacro __using__(opts) do
-    unless Process.whereis(ExUnit.Server) do
-      raise "cannot use ExUnit.Case without starting the ExUnit application, " <>
-              "please call ExUnit.start() or explicitly start the :ex_unit app"
-    end
-
     quote do
       unless ExUnit.Case.__register__(__MODULE__, unquote(opts)) do
         use ExUnit.Callbacks
@@ -272,6 +276,12 @@ defmodule ExUnit.Case do
 
   @doc false
   def __register__(module, opts) do
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError,
+            ~s(the argument passed to "use ExUnit.Case" must be a list of options, ) <>
+              ~s(got: #{inspect(opts)})
+    end
+
     registered? = Module.has_attribute?(module, :ex_unit_tests)
 
     unless registered? do
@@ -281,33 +291,33 @@ defmodule ExUnit.Case do
         raise "you must set @tag, @describetag, and @moduletag after the call to \"use ExUnit.Case\""
       end
 
-      attributes = [
+      accumulate_attributes = [
         :ex_unit_tests,
         :tag,
         :describetag,
         :moduletag,
         :ex_unit_registered_test_attributes,
         :ex_unit_registered_describe_attributes,
-        :ex_unit_registered_module_attributes,
-        :ex_unit_used_describes
+        :ex_unit_registered_module_attributes
       ]
 
-      Enum.each(attributes, &Module.register_attribute(module, &1, accumulate: true))
+      Enum.each(accumulate_attributes, &Module.register_attribute(module, &1, accumulate: true))
 
-      attributes = [
-        before_compile: ExUnit.Case,
-        after_compile: ExUnit.Case,
-        ex_unit_async: false,
-        ex_unit_describe: nil
-      ]
+      persisted_attributes = [:ex_unit_async]
 
-      Enum.each(attributes, fn {k, v} -> Module.put_attribute(module, k, v) end)
+      Enum.each(persisted_attributes, &Module.register_attribute(module, &1, persist: true))
+
+      if Keyword.get(opts, :register, true) do
+        Module.put_attribute(module, :after_compile, ExUnit.Case)
+      end
+
+      Module.put_attribute(module, :before_compile, ExUnit.Case)
     end
 
     async? = opts[:async]
 
-    if is_boolean(async?) do
-      Module.put_attribute(module, :ex_unit_async, async?)
+    if is_boolean(async?) or not registered? do
+      Module.put_attribute(module, :ex_unit_async, async? || false)
     end
 
     registered?
@@ -417,11 +427,11 @@ defmodule ExUnit.Case do
 
   When using Mix, you can run all tests in a describe block by name:
 
-      mix test --only describe:"String.capitalize/1"
+      $ mix test --only describe:"String.capitalize/1"
 
   or by passing the exact line the describe block starts on:
 
-      mix test path/to/file:123
+      $ mix test path/to/file:123
 
   Note describe blocks cannot be nested. Instead of relying on hierarchy
   for composition, developers should build on top of named setups. For
@@ -452,66 +462,55 @@ defmodule ExUnit.Case do
   setup steps involved.
   """
   defmacro describe(message, do: block) do
+    definition =
+      quote unquote: false do
+        defp unquote(name)(var!(context)), do: unquote(body)
+      end
+
     quote do
-      ExUnit.Case.__describe__(__MODULE__, __ENV__.line, unquote(message), fn ->
-        unquote(block)
+      ExUnit.Callbacks.__describe__(__MODULE__, __ENV__.line, unquote(message), fn
+        message, describes ->
+          res = unquote(block)
+
+          case ExUnit.Callbacks.__describe__(__MODULE__, message, describes) do
+            {nil, nil} -> :ok
+            {name, body} -> unquote(definition)
+          end
+
+          res
       end)
     end
   end
 
   @doc false
-  def __describe__(module, line, message, fun) do
-    if Module.get_attribute(module, :ex_unit_describe) do
-      raise "cannot call \"describe\" inside another \"describe\". See the documentation " <>
-              "for ExUnit.Case.describe/2 on named setups and how to handle hierarchies"
-    end
+  defmacro __before_compile__(env) do
+    tests =
+      env.module
+      |> Module.get_attribute(:ex_unit_tests)
+      |> Enum.reverse()
+      |> Macro.escape()
 
-    cond do
-      not is_binary(message) ->
-        raise ArgumentError, "describe name must be a string, got: #{inspect(message)}"
-
-      message in Module.get_attribute(module, :ex_unit_used_describes) ->
-        raise ExUnit.DuplicateDescribeError,
-              "describe #{inspect(message)} is already defined in #{inspect(module)}"
-
-      true ->
-        :ok
-    end
-
-    if Module.get_attribute(module, :describetag) != [] do
-      raise "@describetag must be set inside describe/2 blocks"
-    end
-
-    Module.put_attribute(module, :ex_unit_describe, {line, message})
-    Module.put_attribute(module, :ex_unit_used_describes, message)
-
-    try do
-      fun.()
-    after
-      Module.put_attribute(module, :ex_unit_describe, nil)
-      Module.delete_attribute(module, :describetag)
-
-      for attribute <- Module.get_attribute(module, :ex_unit_registered_describe_attributes) do
-        Module.delete_attribute(module, attribute)
-      end
-    end
-  end
-
-  @doc false
-  defmacro __before_compile__(_) do
     quote do
       def __ex_unit__ do
-        %ExUnit.TestModule{file: __ENV__.file, name: __MODULE__, tests: @ex_unit_tests}
+        %ExUnit.TestModule{file: __ENV__.file, name: __MODULE__, tests: unquote(tests)}
       end
     end
   end
 
   @doc false
   def __after_compile__(%{module: module}, _) do
-    if Module.get_attribute(module, :ex_unit_async) do
-      ExUnit.Server.add_async_module(module)
-    else
-      ExUnit.Server.add_sync_module(module)
+    cond do
+      Process.whereis(ExUnit.Server) == nil ->
+        unless Code.can_await_module_compilation?() do
+          raise "cannot use ExUnit.Case without starting the ExUnit application, " <>
+                  "please call ExUnit.start() or explicitly start the :ex_unit app"
+        end
+
+      Module.get_attribute(module, :ex_unit_async) ->
+        ExUnit.Server.add_async_module(module)
+
+      true ->
+        ExUnit.Server.add_sync_module(module)
     end
   end
 
@@ -552,12 +551,13 @@ defmodule ExUnit.Case do
 
     {name, describe, describe_line, describetag} =
       case Module.get_attribute(mod, :ex_unit_describe) do
-        {line, describe} ->
-          description = :"#{test_type} #{describe} #{name}"
-          {description, describe, line, Module.get_attribute(mod, :describetag)}
+        {line, describe, _counter} ->
+          test_name = validate_test_name("#{test_type} #{describe} #{name}")
+          {test_name, describe, line, Module.get_attribute(mod, :describetag)}
 
-        _ ->
-          {:"#{test_type} #{name}", nil, nil, []}
+        nil ->
+          test_name = validate_test_name("#{test_type} #{name}")
+          {test_name, nil, nil, []}
       end
 
     if Module.defines?(mod, {name, 1}) do
@@ -566,8 +566,8 @@ defmodule ExUnit.Case do
 
     tags =
       (tags ++ tag ++ describetag ++ moduletag)
-      |> normalize_tags
-      |> validate_tags
+      |> normalize_tags()
+      |> validate_tags()
       |> Map.merge(%{
         line: line,
         file: file,
@@ -594,6 +594,7 @@ defmodule ExUnit.Case do
   This function is deprecated in favor of `register_test/6` which performs
   better under tight loops by avoiding `__ENV__`.
   """
+  # TODO: Deprecate on Elixir v1.17
   @doc deprecated: "Use register_test/6 instead"
   def register_test(%{module: mod, file: file, line: line}, test_type, name, tags) do
     register_test(mod, file, line, test_type, name, tags)
@@ -756,10 +757,24 @@ defmodule ExUnit.Case do
     tags
   end
 
+  defp validate_test_name(name) do
+    try do
+      String.to_atom(name)
+    rescue
+      SystemLimitError ->
+        raise SystemLimitError, """
+        the computed name of a test (which includes its type, the name of its parent describe \
+        block if present, and the test name itself) must be shorter than 255 characters, \
+        got: #{inspect(name)}
+        """
+    end
+  end
+
   defp normalize_tags(tags) do
     Enum.reduce(Enum.reverse(tags), %{}, fn
+      {key, value}, acc -> Map.put(acc, key, value)
       tag, acc when is_atom(tag) -> Map.put(acc, tag, true)
-      tag, acc when is_list(tag) -> tag |> Enum.into(acc)
+      tag, acc when is_list(tag) -> Enum.into(tag, acc)
     end)
   end
 end

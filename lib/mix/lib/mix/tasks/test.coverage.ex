@@ -81,9 +81,9 @@ defmodule Mix.Tasks.Test.Coverage do
   If you partition your tests across multiple runs,
   you can unify the report as shown below:
 
-      MIX_TEST_PARTITION=1 mix test --partitions 2 --cover
-      MIX_TEST_PARTITION=2 mix test --partitions 2 --cover
-      mix test.coverage
+      $ MIX_TEST_PARTITION=1 mix test --partitions 2 --cover
+      $ MIX_TEST_PARTITION=2 mix test --partitions 2 --cover
+      $ mix test.coverage
 
   This works because the `--partitions` option
   automatically exports the coverage results.
@@ -96,24 +96,24 @@ defmodule Mix.Tasks.Test.Coverage do
   results have been exported, like this:
 
       # from the umbrella root
-      mix test --cover --export-coverage default
-      mix test.coverage
+      $ mix test --cover --export-coverage default
+      $ mix test.coverage
 
   Of course, if you want to actually partition the tests,
   you can also do:
 
       # from the umbrella root
-      MIX_TEST_PARTITION=1 mix test --partitions 2 --cover
-      MIX_TEST_PARTITION=2 mix test --partitions 2 --cover
-      mix test.coverage
+      $ MIX_TEST_PARTITION=1 mix test --partitions 2 --cover
+      $ MIX_TEST_PARTITION=2 mix test --partitions 2 --cover
+      $ mix test.coverage
 
   On the other hand, if you want partitioned tests but
   per-app reports, you can do:
 
       # from the umbrella root
-      MIX_TEST_PARTITION=1 mix test --partitions 2 --cover
-      MIX_TEST_PARTITION=2 mix test --partitions 2 --cover
-      mix cmd mix test.coverage
+      $ MIX_TEST_PARTITION=1 mix test --partitions 2 --cover
+      $ MIX_TEST_PARTITION=2 mix test --partitions 2 --cover
+      $ mix cmd mix test.coverage
 
   When running `test.coverage` from the umbrella root, it
   will use the `:test_coverage` configuration from the umbrella
@@ -136,12 +136,12 @@ defmodule Mix.Tasks.Test.Coverage do
   """
 
   @shortdoc "Build report from exported test coverage"
-  @preferred_cli_env :test
   @default_threshold 90
 
   @doc false
   def run(_args) do
     Mix.Task.run("compile")
+    Mix.ensure_application!(:tools)
     config = Mix.Project.config()
     test_coverage = config[:test_coverage] || []
     {cover_paths, compile_paths} = apps_paths(config, test_coverage)
@@ -173,6 +173,7 @@ defmodule Mix.Tasks.Test.Coverage do
 
     if apps_paths = Mix.Project.apps_paths(config) do
       build_path = Mix.Project.build_path(config)
+      apps_paths = Enum.sort(apps_paths)
 
       compile_paths =
         Enum.map(apps_paths, fn {app, _} ->
@@ -188,6 +189,7 @@ defmodule Mix.Tasks.Test.Coverage do
   @doc false
   def start(compile_path, opts) do
     Mix.shell().info("Cover compiling modules ...")
+    Mix.ensure_application!(:tools)
 
     if Keyword.get(opts, :local_only, true) do
       :cover.local_only()
@@ -254,7 +256,7 @@ defmodule Mix.Tasks.Test.Coverage do
     output = Keyword.get(opts, :output, "cover")
     File.mkdir_p!(output)
 
-    case :cover.export('#{output}/#{name}.coverdata') do
+    case :cover.export(~c"#{output}/#{name}.coverdata") do
       :ok ->
         Mix.shell().info("Run \"mix test.coverage\" once all exports complete")
 
@@ -287,7 +289,7 @@ defmodule Mix.Tasks.Test.Coverage do
     File.mkdir_p!(output)
 
     for mod <- modules do
-      {:ok, _} = :cover.analyse_to_file(mod, '#{output}/#{mod}.html', [:html])
+      {:ok, _} = :cover.analyse_to_file(mod, ~c"#{output}/#{mod}.html", [:html])
     end
 
     Mix.shell().info("Generated HTML coverage results in #{inspect(output)} directory")

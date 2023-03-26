@@ -17,9 +17,10 @@ defmodule ExUnit.Callbacks do
   test is run. All `setup` callbacks are run before each test. No callback
   is run if the test case has no tests or all tests have been filtered out.
 
-  `setup` and `setup_all` callbacks can be defined by a block, by passing
-  an atom naming a one-arity function, or by passing a list of such
-  atoms. Both can opt to receive the current context by specifying it
+  `setup` and `setup_all` callbacks can be defined by either a block, an atom
+  naming a local function, a `{module, function}` tuple, or a list of atoms/tuples.
+
+  Both can opt to receive the current context by specifying it
   as parameter if defined by a block. Functions used to define a test
   setup must accept the context as single argument.
 
@@ -124,13 +125,13 @@ defmodule ExUnit.Callbacks do
 
   It is also common to define your setup as a series of functions,
   which are put together by calling `setup` or `setup_all` with a
-  list of atoms. Each of these functions receive the context and can
+  list of function names. Each of these functions receive the context and can
   return any of the values allowed in `setup` blocks:
 
       defmodule ExampleContextTest do
         use ExUnit.Case
 
-        setup [:step1, :step2, :step3]
+        setup [:step1, :step2, :step3, {OtherModule, :step4}]
 
         defp step1(_context), do: [step_one: true]
         defp step2(_context), do: {:ok, step_two: true} # return values with shape of {:ok, keyword() | map()} allowed
@@ -167,6 +168,7 @@ defmodule ExUnit.Callbacks do
       @ex_unit_describe nil
       @ex_unit_setup []
       @ex_unit_setup_all []
+      @ex_unit_used_describes %{}
 
       @before_compile unquote(__MODULE__)
       import unquote(__MODULE__)
@@ -175,14 +177,19 @@ defmodule ExUnit.Callbacks do
 
   @doc false
   defmacro __before_compile__(env) do
-    [compile_callbacks(env, :setup), compile_callbacks(env, :setup_all)]
+    used_describes = Module.get_attribute(env.module, :ex_unit_used_describes)
+    [compile_setup(env, :setup, used_describes), compile_setup(env, :setup_all, %{})]
   end
 
   @doc """
   Defines a callback to be run before each test in a case.
 
-  Accepts a block or the name of a one-arity function in the form of an atom,
-  or a list of such atoms.
+  Accepts one of these:
+
+    * a block
+    * an atom naming a local function
+    * a `{module, function}` tuple
+    * a list of atoms and `{module, function}` tuples
 
   Can return values to be merged into the context, to set up the state for
   tests. For more details, see the "Context" section shown above.
@@ -191,25 +198,28 @@ defmodule ExUnit.Callbacks do
 
   ## Examples
 
-      def clean_up_tmp_directory(context) do
+      defp clean_up_tmp_directory(context) do
         # perform setup
         :ok
       end
 
       setup :clean_up_tmp_directory
 
+      setup [:clean_up_tmp_directory, :another_setup]
+
       setup do
         [conn: Plug.Conn.build_conn()]
       end
 
+      setup {MyModule, :my_setup_function}
+
   """
-  defmacro setup(block) do
-    if Keyword.keyword?(block) do
-      do_setup(quote(do: _), block)
+  defmacro setup(block_or_functions) do
+    if Keyword.keyword?(block_or_functions) do
+      do_setup(quote(do: _), block_or_functions)
     else
       quote do
-        @ex_unit_setup ExUnit.Callbacks.__callback__(unquote(block), @ex_unit_describe) ++
-                         @ex_unit_setup
+        ExUnit.Callbacks.__setup__(__MODULE__, unquote(block_or_functions))
       end
     end
   end
@@ -217,11 +227,10 @@ defmodule ExUnit.Callbacks do
   @doc """
   Defines a callback to be run before each test in a case.
 
-  Accepts a block or the name of a one-arity function in the form of an atom,
-  or a list of such atoms.
+  This is similar to `setup/1`, but the first argument is the context.
+  The `block` argument can only be a block.
 
-  Can return values to be merged into the `context`, to set up the state for
-  tests. For more details, see the "Context" section shown above.
+  For more details, see the "Context" section shown above.
 
   ## Examples
 
@@ -231,22 +240,55 @@ defmodule ExUnit.Callbacks do
 
   """
   defmacro setup(context, block) do
+    unless Keyword.keyword?(block) and Keyword.has_key?(block, :do) do
+      raise ArgumentError,
+            "setup/2 requires a block as the second argument after the context, got: #{Macro.to_string(block)}"
+    end
+
     do_setup(context, block)
   end
 
   defp do_setup(context, block) do
     quote bind_quoted: [context: escape(context), block: escape(block)] do
-      name = :"__ex_unit_setup_#{length(@ex_unit_setup)}"
+      name = ExUnit.Callbacks.__setup__(__MODULE__)
       defp unquote(name)(unquote(context)), unquote(block)
-      @ex_unit_setup [{name, @ex_unit_describe} | @ex_unit_setup]
     end
+  end
+
+  @doc false
+  def __setup__(module, callbacks) do
+    setup = Module.get_attribute(module, :ex_unit_setup)
+
+    Module.put_attribute(
+      module,
+      :ex_unit_setup,
+      Enum.reverse(validate_callbacks!(callbacks), setup)
+    )
+  end
+
+  @doc false
+  def __setup__(module) do
+    setup = Module.get_attribute(module, :ex_unit_setup)
+
+    name =
+      case Module.get_attribute(module, :ex_unit_describe) do
+        {_line, _message, counter} -> :"__ex_unit_setup_#{counter}_#{length(setup)}"
+        nil -> :"__ex_unit_setup_#{length(setup)}"
+      end
+
+    Module.put_attribute(module, :ex_unit_setup, [name | setup])
+    name
   end
 
   @doc """
   Defines a callback to be run before all tests in a case.
 
-  Accepts a block or the name of a one-arity function in the form of an atom,
-  or a list of such atoms.
+  Accepts one of these:
+
+    * a block
+    * an atom naming a local function
+    * a `{module, function}` tuple
+    * a list of atoms and `{module, function}` tuples
 
   Can return values to be merged into the `context`, to set up the state for
   tests. For more details, see the "Context" section shown above.
@@ -254,17 +296,32 @@ defmodule ExUnit.Callbacks do
   `setup_all/1` callbacks are executed in a separate process than tests.
   All `setup_all/1` callbacks are executed in order in the same process.
 
+  ## On-Exit Handlers
+
+  On-exit handlers that you register inside `setup_all/1` callbacks
+  are executed at once after all tests in the module have been run.
+  They are all executed *in the same process*, which is a separate
+  process dedicated to running these handlers. These handlers are
+  executed in the reverse order of their respective `setup_all/1`
+  callbacks.
+
   ## Examples
 
       # One-arity function name
       setup_all :clean_up_tmp_directory
 
-      def clean_up_tmp_directory(_context) do
+      # A module and function
+      setup_all {MyModule, :my_setup_function}
+
+      # A list of one-arity functions and module/function tuples
+      setup_all [:clean_up_tmp_directory, {MyModule, :my_setup_function}]
+
+      defp clean_up_tmp_directory(_context) do
         # perform setup
         :ok
       end
 
-      # Block
+      # A block
       setup_all do
         [conn: Plug.Conn.build_conn()]
       end
@@ -277,18 +334,29 @@ defmodule ExUnit.Callbacks do
         # ...
       end
 
+  ### Handlers
+
+  You can define "global" on-exit handlers in `setup_all/1` callbacks:
+
+      setup_all do
+        Database.create_table_for(__MODULE__)
+
+        on_exit(fn ->
+          Database.drop_table_for(__MODULE__)
+        end)
+
+        :ok
+      end
+
+  The handler in the example above will be executed only once, after
+  running all tests in the module.
   """
   defmacro setup_all(block) do
     if Keyword.keyword?(block) do
       do_setup_all(quote(do: _), block)
     else
       quote do
-        @ex_unit_describe &&
-          raise "cannot invoke setup_all/1 inside describe as setup_all/1 " <>
-                  "always applies to all tests in a module"
-
-        @ex_unit_setup_all ExUnit.Callbacks.__callback__(unquote(block), nil) ++
-                             @ex_unit_setup_all
+        ExUnit.Callbacks.__setup_all__(__MODULE__, unquote(block))
       end
     end
   end
@@ -296,8 +364,8 @@ defmodule ExUnit.Callbacks do
   @doc """
   Defines a callback to be run before all tests in a case.
 
-  Same as `setup_all/1` but also takes a context. See
-  the "Context" section in the module documentation.
+  Similar as `setup_all/1` but also takes a context. The second argument
+  must be a block. See the "Context" section in the module documentation.
 
   ## Examples
 
@@ -307,37 +375,92 @@ defmodule ExUnit.Callbacks do
 
   """
   defmacro setup_all(context, block) do
+    unless Keyword.keyword?(block) and Keyword.has_key?(block, :do) do
+      raise ArgumentError,
+            "setup_all/2 requires a block as the second argument after the context, got: #{Macro.to_string(block)}"
+    end
+
     do_setup_all(context, block)
   end
 
   defp do_setup_all(context, block) do
     quote bind_quoted: [context: escape(context), block: escape(block)] do
-      @ex_unit_describe && raise "cannot invoke setup_all/2 inside describe"
-      name = :"__ex_unit_setup_all_#{length(@ex_unit_setup_all)}"
+      name = ExUnit.Callbacks.__setup_all__(__MODULE__)
       defp unquote(name)(unquote(context)), unquote(block)
-      @ex_unit_setup_all [{name, nil} | @ex_unit_setup_all]
+    end
+  end
+
+  @doc false
+  def __setup_all__(module, callbacks) do
+    no_describe!(module)
+    setup_all = Module.get_attribute(module, :ex_unit_setup_all)
+
+    Module.put_attribute(
+      module,
+      :ex_unit_setup_all,
+      Enum.reverse(validate_callbacks!(callbacks), setup_all)
+    )
+  end
+
+  @doc false
+  def __setup_all__(module) do
+    no_describe!(module)
+    setup_all = Module.get_attribute(module, :ex_unit_setup_all)
+    name = :"__ex_unit_setup_all_#{length(setup_all)}"
+    Module.put_attribute(module, :ex_unit_setup_all, [name | setup_all])
+    name
+  end
+
+  defp no_describe!(module) do
+    if Module.get_attribute(module, :ex_unit_describe) do
+      raise "cannot invoke setup_all/1-2 inside describe as setup_all " <>
+              "always applies to all tests in a module"
+    end
+  end
+
+  defp validate_callbacks!(callbacks) do
+    for k <- List.wrap(callbacks) do
+      case k do
+        {mod, fun} when is_atom(mod) and is_atom(fun) ->
+          {mod, fun}
+
+        name when is_atom(name) ->
+          name
+
+        invalid ->
+          raise ArgumentError,
+                "setup/setup_all expect a callback as an atom, " <>
+                  "a {module, function} tuple or a list of callbacks, got: " <>
+                  inspect(invalid)
+      end
     end
   end
 
   @doc """
-  Defines a callback that runs once the test exits.
+  Registers a callback that runs once the test exits.
 
   `callback` is a function that receives no arguments and
-  runs in a separate process than the caller.
+  runs in a separate process than the caller. Its return
+  value is irrelevant and is discarded.
 
-  `on_exit/2` is usually called from `setup` and `setup_all`
+  `on_exit/2` is usually called from `setup/1` and `setup_all/1`
   callbacks, often to undo the action performed during the setup.
-  However, `on_exit/2` may also be called dynamically, where a
-  reference can be used to guarantee the callback will be invoked
-  only once.
 
-  `on_exit/2` gets executed in a blocking fashion after a test
-  exits and **before** running the next test. This means that no
-  other test from the same test case will be running while the
-  `on_exit/2` callback for a previous test is running.
+  However, `on_exit/2` may also be called dynamically. An "ID" (the
+  `name_or_ref` argument) can be used to guarantee that the callback
+  will be invoked only once. ExUnit uses this term to identify an
+  `on_exit/2` handler: if you want to override a previous handler, for
+  example, use the same `name_or_ref` across multiple `on_exit/2`
+  calls.
 
-  `on_exit/2` is executed in a different process than the test
-  process.
+  If `on_exit/2` is called inside `setup/1` or inside a test, it's
+  executed in a blocking fashion after the test exits and *before
+  running the next test*. This means that no other test from the same
+  test case will be running while the `on_exit/2` callback for a
+  previous test is running. `on_exit/2` is executed in a different
+  process than the test process. On the other hand, if `on_exit/2` is
+  called inside a `setup_all/1` callback then `callback` is executed
+  after running *all tests* (see `setup_all/1` for more information).
 
   ## Examples
 
@@ -346,8 +469,25 @@ defmodule ExUnit.Callbacks do
         on_exit(fn -> File.rm!("fixture.json") end)
       end
 
+  You can use the same `name_or_ref` across multiple `on_exit/2` calls
+  to "override" the registered handler:
+
+      setup do
+        on_exit(:drop_table, fn ->
+          Database.drop_table()
+        end)
+      end
+
+      test "a test that shouldn't drop the table" do
+        on_exit(:drop_table, fn -> :ok end)
+      end
+
+  Relying too much on overriding callbacks like this can lead to test
+  cases that are hard to understand and with too many layers of
+  indirection. However, it can be useful in some cases or for library
+  authors, for example.
   """
-  @spec on_exit(term, (() -> term)) :: :ok
+  @spec on_exit(term, (-> term)) :: :ok
   def on_exit(name_or_ref \\ make_ref(), callback) when is_function(callback, 0) do
     case ExUnit.OnExitHandler.add(self(), name_or_ref, callback) do
       :ok ->
@@ -387,6 +527,10 @@ defmodule ExUnit.Callbacks do
   want to remove a process from the supervision tree in the middle of a
   test, as simply shutting down the process would cause it to be restarted
   according to its `:restart` value.
+
+  The started process is not linked to the test process and a crash will
+  not necessarily fail the test. To start and link a process to guarantee
+  that any crash would also fail the test use `start_link_supervised!/2`.
 
   This function returns `{:ok, pid}` in case of success, otherwise it
   returns `{:error, reason}`.
@@ -444,6 +588,24 @@ defmodule ExUnit.Callbacks do
   defp start_supervised_error(reason), do: Exception.format_exit({:start_spec, reason})
 
   @doc """
+  Same as `start_supervised!/2` but links the started process to the test process.
+
+  If the process that was started crashes, the crash is propagated to the test process,
+  failing the test and printing the cause of the crash.
+
+  Note that if the started terminates before it is linked to the test process,
+  this function will exit with reason `:noproc`.
+  """
+  @doc since: "1.14.0"
+  @spec start_link_supervised!(Supervisor.child_spec() | module | {module, term}, keyword) ::
+          pid
+  def start_link_supervised!(child_spec_or_module, opts \\ []) do
+    pid = start_supervised!(child_spec_or_module, opts)
+    Process.link(pid)
+    pid
+  end
+
+  @doc """
   Stops a child process started via `start_supervised/2`.
 
   This function expects the `id` in the child specification.
@@ -463,6 +625,12 @@ defmodule ExUnit.Callbacks do
         {:error, :not_found}
 
       {:ok, sup} ->
+        pid = pid_for_child(sup, id)
+
+        if pid do
+          Process.unlink(pid)
+        end
+
         with :ok <- Supervisor.terminate_child(sup, id) do
           # If the terminated child was temporary, delete_child returns {:error, :not_found}.
           # Since the child was successfully terminated, we treat this result as a success.
@@ -472,6 +640,14 @@ defmodule ExUnit.Callbacks do
 
       :error ->
         raise ArgumentError, "stop_supervised/1 can only be invoked from the test process"
+    end
+  end
+
+  defp pid_for_child(sup, id) do
+    children = Supervisor.which_children(sup)
+
+    with {_id, pid, _type, _modules} <- List.keyfind(children, id, 0) do
+      pid
     end
   end
 
@@ -509,51 +685,51 @@ defmodule ExUnit.Callbacks do
   end
 
   @doc false
-  def __merge__(mod, context, value) do
-    merge(mod, context, value, value)
-  end
-
-  defp merge(_mod, context, :ok, _original_value) do
+  def __merge__(_mod, _kind, context, :ok) do
     context
   end
 
-  defp merge(mod, context, {:ok, value}, original_value) do
-    merge(mod, context, value, original_value)
+  def __merge__(mod, kind, context, {:ok, value}) do
+    unwrapped_merge(mod, kind, context, value, {:ok, value})
   end
 
-  defp merge(mod, _context, %_{}, original_value) do
-    raise_merge_failed!(mod, original_value)
+  def __merge__(mod, kind, context, value) do
+    unwrapped_merge(mod, kind, context, value, value)
   end
 
-  defp merge(mod, context, data, original_value) when is_list(data) do
-    merge(mod, context, Map.new(data), original_value)
+  defp unwrapped_merge(mod, kind, _context, %_{}, original_value) do
+    raise_merge_failed!(mod, kind, original_value)
   end
 
-  defp merge(mod, context, data, _original_value) when is_map(data) do
-    context_merge(mod, context, data)
+  defp unwrapped_merge(mod, kind, context, data, _original_value) when is_list(data) do
+    context_merge(mod, kind, context, Map.new(data))
   end
 
-  defp merge(mod, _, _return_value, original_value) do
-    raise_merge_failed!(mod, original_value)
+  defp unwrapped_merge(mod, kind, context, data, _original_value) when is_map(data) do
+    context_merge(mod, kind, context, data)
   end
 
-  defp context_merge(mod, context, data) do
+  defp unwrapped_merge(mod, kind, _, _return_value, original_value) do
+    raise_merge_failed!(mod, kind, original_value)
+  end
+
+  defp context_merge(mod, kind, context, data) do
     Map.merge(context, data, fn
       k, v1, v2 when k in @reserved ->
-        if v1 == v2, do: v1, else: raise_merge_reserved!(mod, k, v2)
+        if v1 == v2, do: v1, else: raise_merge_reserved!(mod, kind, k, v2)
 
       _, _, v ->
         v
     end)
   end
 
-  defp raise_merge_failed!(mod, return_value) do
-    raise "expected ExUnit callback in #{inspect(mod)} to return :ok | keyword | map, " <>
-            "got #{inspect(return_value)} instead"
+  defp raise_merge_failed!(mod, kind, return_value) do
+    raise "expected ExUnit #{kind} callback in #{inspect(mod)} to " <>
+            "return :ok | keyword | map, got #{inspect(return_value)} instead"
   end
 
-  defp raise_merge_reserved!(mod, key, value) do
-    raise "ExUnit callback in #{inspect(mod)} is trying to set " <>
+  defp raise_merge_reserved!(mod, kind, key, value) do
+    raise "ExUnit #{kind} callback in #{inspect(mod)} is trying to set " <>
             "reserved field #{inspect(key)} to #{inspect(value)}"
   end
 
@@ -561,44 +737,144 @@ defmodule ExUnit.Callbacks do
     Macro.escape(contents, unquote: true)
   end
 
-  defp compile_callbacks(env, kind) do
-    callbacks = Module.get_attribute(env.module, :"ex_unit_#{kind}") |> Enum.reverse()
+  @doc false
+  def __describe__(module, line, message, fun) do
+    if Module.get_attribute(module, :ex_unit_describe) do
+      raise "cannot call \"describe\" inside another \"describe\". See the documentation " <>
+              "for ExUnit.Case.describe/2 on named setups and how to handle hierarchies"
+    end
 
-    acc =
-      case callbacks do
+    used_describes = Module.get_attribute(module, :ex_unit_used_describes)
+
+    cond do
+      not is_binary(message) ->
+        raise ArgumentError, "describe name must be a string, got: #{inspect(message)}"
+
+      is_map_key(used_describes, message) ->
+        raise ExUnit.DuplicateDescribeError,
+              "describe #{inspect(message)} is already defined in #{inspect(module)}"
+
+      true ->
+        :ok
+    end
+
+    if Module.get_attribute(module, :describetag) != [] do
+      raise "@describetag must be set inside describe/2 blocks"
+    end
+
+    setup = Module.get_attribute(module, :ex_unit_setup)
+    Module.put_attribute(module, :ex_unit_setup, [])
+    Module.put_attribute(module, :ex_unit_describe, {line, message, map_size(used_describes)})
+
+    try do
+      fun.(message, used_describes)
+    after
+      Module.put_attribute(module, :ex_unit_describe, nil)
+      Module.put_attribute(module, :ex_unit_setup, setup)
+      Module.delete_attribute(module, :describetag)
+
+      for attribute <- Module.get_attribute(module, :ex_unit_registered_describe_attributes) do
+        Module.delete_attribute(module, attribute)
+      end
+    end
+  end
+
+  @doc false
+  def __describe__(module, message, used_describes) do
+    {name, body} =
+      case Module.get_attribute(module, :ex_unit_setup) do
         [] ->
-          quote(do: context)
+          {nil, nil}
 
-        [h | t] ->
-          Enum.reduce(t, compile_merge(h), fn callback_describe, acc ->
-            quote do
-              context = unquote(acc)
-              unquote(compile_merge(callback_describe))
-            end
-          end)
+        callbacks ->
+          {:"__ex_unit_describe_#{map_size(used_describes)}", compile_setup(callbacks, :setup)}
       end
 
-    quote do
-      def __ex_unit__(unquote(kind), context) do
-        describe = Map.get(context, :describe, nil)
-        unquote(acc)
-      end
-    end
+    used_describes = Map.put(used_describes, message, name)
+    Module.put_attribute(module, :ex_unit_used_describes, used_describes)
+    {name, body}
   end
 
-  defp compile_merge({callback, nil}) do
-    quote do
-      unquote(__MODULE__).__merge__(__MODULE__, context, unquote(callback)(context))
-    end
-  end
+  defp compile_setup(env, kind, describes) do
+    calls =
+      env.module
+      |> Module.get_attribute(:"ex_unit_#{kind}")
+      |> compile_setup(kind)
 
-  defp compile_merge({callback, {_line, describe}}) do
-    quote do
-      if unquote(describe) == describe do
-        unquote(compile_merge({callback, nil}))
+    describe_clauses =
+      for {describe, callback} <- describes,
+          callback != nil,
+          clause <- quote(do: (unquote(describe) -> unquote(callback)(var!(context)))),
+          do: clause
+
+    body =
+      if describe_clauses == [] do
+        calls
       else
-        context
+        describe_clauses =
+          describe_clauses ++
+            quote do
+              _ -> var!(context)
+            end
+
+        quote do
+          var!(context) = unquote(calls)
+          case Map.get(var!(context), :describe, nil), do: unquote(describe_clauses)
+        end
       end
+
+    quote do
+      def __ex_unit__(unquote(kind), var!(context)), do: unquote(body)
     end
   end
+
+  defp compile_setup([], _kind) do
+    quote(do: var!(context))
+  end
+
+  defp compile_setup(callbacks, kind) do
+    [h | t] = Enum.reverse(callbacks)
+
+    Enum.reduce(t, compile_setup_call(h, kind), fn callback, acc ->
+      quote do
+        var!(context) = unquote(acc)
+        unquote(compile_setup_call(callback, kind))
+      end
+    end)
+  end
+
+  defp compile_setup_call(callback, kind) when is_atom(callback) do
+    quote do
+      result =
+        unquote(__MODULE__).__merge__(
+          __MODULE__,
+          unquote(kind),
+          var!(context),
+          unquote(callback)(var!(context))
+        )
+
+      ExUnit.Callbacks.__noop__()
+      result
+    end
+  end
+
+  defp compile_setup_call({module, callback}, kind) do
+    quote do
+      result =
+        unquote(__MODULE__).__merge__(
+          __MODULE__,
+          unquote(kind),
+          var!(context),
+          unquote(module).unquote(callback)(var!(context))
+        )
+
+      ExUnit.Callbacks.__noop__()
+      result
+    end
+  end
+
+  # We inject this into compiled setup/setup_all calls, to avoid tail-call optimization and get
+  # better stacktraces. See the comments in https://github.com/elixir-lang/elixir/pull/12382.
+  @doc false
+  def __noop__, do: :noop
 end

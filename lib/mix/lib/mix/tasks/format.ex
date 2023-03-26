@@ -6,10 +6,10 @@ defmodule Mix.Tasks.Format do
   @moduledoc """
   Formats the given files and patterns.
 
-      mix format mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
+      $ mix format mix.exs "lib/**/*.{ex,exs}" "test/**/*.{ex,exs}"
 
-  If any of the files is `-`, then the output is read from stdin
-  and written to stdout.
+  If any of the files is `-`, then the input is read from stdin and the output
+  is written to stdout.
 
   ## Formatting options
 
@@ -66,6 +66,11 @@ defmodule Mix.Tasks.Format do
       Defaults to `.formatter.exs` if one is available. See the
       "Formatting options" section above for more information.
 
+    * `--stdin-filename` - path to the file being formatted on stdin.
+      This is useful if you are using plugins to support custom filetypes such
+      as `.heex`. Without passing this flag, it is assumed that the code being
+      passed via stdin is valid Elixir code. Defaults to "stdin.exs".
+
   ## When to format code
 
   We recommend developers to format code directly in their editors, either
@@ -73,7 +78,7 @@ defmodule Mix.Tasks.Format do
   such option is not available in your editor of choice, adding the required
   integration is usually a matter of invoking:
 
-      cd $project && mix format $file
+      $ cd $project && mix format $file
 
   where `$file` refers to the current file and `$project` is the root of your
   project.
@@ -104,18 +109,18 @@ defmodule Mix.Tasks.Format do
 
   The `opts` passed to `format/2` contains all the formatting options and either:
 
-      * `:sigil` (atom) - the sigil being formatted, e.g. `:M`.
+    * `:sigil` (atom) - the sigil being formatted, e.g. `:M`.
 
-      * `:modifiers` (charlist) - list of sigil modifiers.
+    * `:modifiers` (charlist) - list of sigil modifiers.
 
-      * `:extension` (string) - the extension of the file being formatted, e.g. `".md"`.
+    * `:extension` (string) - the extension of the file being formatted, e.g. `".md"`.
 
   Now any application can use your formatter as follows:
 
-      # .formatters.exs
+      # .formatter.exs
       [
         # Define the desired plugins
-        plugins: [MixMarkdownFormatter],
+        plugins: [MixMarkdownFormatter, AnotherMarkdownFormatter],
         # Remember to update the inputs list to include the new extensions
         inputs: ["{mix,.formatter}.exs", "{config,lib,test}/**/*.{ex,exs}", "posts/*.{md,markdown}"]
       ]
@@ -123,6 +128,10 @@ defmodule Mix.Tasks.Format do
   Remember that, when running the formatter with plugins, you must make
   sure that your dependencies and your application have been compiled,
   so the relevant plugin code can be loaded. Otherwise a warning is logged.
+
+  In addition, the order by which you input your plugins is the format order.
+  So, in the above `.formatter.exs`, the `MixMarkdownFormatter` will format
+  the markdown files and sigils before `AnotherMarkdownFormatter`.
 
   ## Importing dependencies configuration
 
@@ -166,11 +175,31 @@ defmodule Mix.Tasks.Format do
     check_equivalent: :boolean,
     check_formatted: :boolean,
     dot_formatter: :string,
-    dry_run: :boolean
+    dry_run: :boolean,
+    stdin_filename: :string
   ]
 
   @manifest "cached_dot_formatter"
-  @manifest_vsn 1
+  @manifest_vsn 2
+
+  @newline "\n"
+  @blank " "
+
+  @separator "|"
+  @cr "↵"
+  @line_num_pad @blank
+
+  @gutter [
+    del: " -",
+    eq: "  ",
+    ins: " +",
+    skip: "  "
+  ]
+
+  @colors [
+    del: [text: :red, space: :red_background],
+    ins: [text: :green, space: :green_background]
+  ]
 
   @doc """
   Returns which features this plugin should plug into.
@@ -194,13 +223,9 @@ defmodule Mix.Tasks.Format do
     {formatter_opts_and_subs, _sources} =
       eval_deps_and_subdirectories(dot_formatter, [], formatter_opts, [dot_formatter])
 
-    # In case plugins are given, we need to reenable those tasks
-    Mix.Task.reenable("loadpaths")
-    Mix.Task.reenable("deps.loadpaths")
-
     args
-    |> expand_args(dot_formatter, formatter_opts_and_subs)
-    |> Task.async_stream(&format_file(&1, opts), ordered: false, timeout: 30000)
+    |> expand_args(dot_formatter, formatter_opts_and_subs, opts)
+    |> Task.async_stream(&format_file(&1, opts), ordered: false, timeout: :infinity)
     |> Enum.reduce({[], []}, &collect_status/2)
     |> check!()
   end
@@ -267,21 +292,20 @@ defmodule Mix.Tasks.Format do
     end
 
     if plugins != [] do
-      args = ["--no-elixir-version-check", "--no-deps-check", "--no-archives-check"]
-      Mix.Task.run("loadpaths", args)
+      Mix.Task.run("loadpaths", [])
+    end
+
+    if not Enum.all?(plugins, &Code.ensure_loaded?/1) do
+      Mix.Task.run("compile", [])
     end
 
     for plugin <- plugins do
       cond do
         not Code.ensure_loaded?(plugin) ->
-          Mix.shell().error(
-            "Skipping formatter plugin #{inspect(plugin)} because module cannot be found"
-          )
+          Mix.raise("Formatter plugin #{inspect(plugin)} cannot be found")
 
         not function_exported?(plugin, :features, 1) ->
-          Mix.shell().error(
-            "Skipping formatter plugin #{inspect(plugin)} because it does not define features/1"
-          )
+          Mix.raise("Formatter plugin #{inspect(plugin)} does not define features/1")
 
         true ->
           :ok
@@ -291,7 +315,19 @@ defmodule Mix.Tasks.Format do
     sigils =
       for plugin <- plugins,
           sigil <- find_sigils_from_plugins(plugin, formatter_opts),
-          do: {sigil, &plugin.format(&1, &2 ++ formatter_opts)}
+          do: {sigil, plugin}
+
+    sigils =
+      sigils
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.map(fn {sigil, plugins} ->
+        {sigil,
+         fn input, opts ->
+           Enum.reduce(plugins, input, fn plugin, input ->
+             plugin.format(input, opts ++ formatter_opts)
+           end)
+         end}
+      end)
 
     formatter_opts =
       formatter_opts
@@ -303,10 +339,21 @@ defmodule Mix.Tasks.Format do
     else
       manifest = Path.join(Mix.Project.manifest_path(), @manifest)
 
-      maybe_cache_in_manifest(dot_formatter, manifest, fn ->
-        {subdirectories, sources} = eval_subs_opts(subs, prefix, sources)
-        {{eval_deps_opts(formatter_opts, deps), subdirectories}, sources}
-      end)
+      {{locals_without_parens, subdirectories}, sources} =
+        maybe_cache_in_manifest(dot_formatter, manifest, fn ->
+          {subdirectories, sources} = eval_subs_opts(subs, prefix, sources)
+          {{eval_deps_opts(deps), subdirectories}, sources}
+        end)
+
+      formatter_opts =
+        Keyword.update(
+          formatter_opts,
+          :locals_without_parens,
+          locals_without_parens,
+          &(locals_without_parens ++ &1)
+        )
+
+      {{formatter_opts, subdirectories}, sources}
     end
   end
 
@@ -341,29 +388,21 @@ defmodule Mix.Tasks.Format do
     {entry, sources}
   end
 
-  defp eval_deps_opts(formatter_opts, []) do
-    formatter_opts
+  defp eval_deps_opts([]) do
+    []
   end
 
-  defp eval_deps_opts(formatter_opts, deps) do
+  defp eval_deps_opts(deps) do
     deps_paths = Mix.Project.deps_paths()
 
-    parenless_calls =
-      for dep <- deps,
-          dep_path = assert_valid_dep_and_fetch_path(dep, deps_paths),
-          dep_dot_formatter = Path.join(dep_path, ".formatter.exs"),
-          File.regular?(dep_dot_formatter),
-          dep_opts = eval_file_with_keyword_list(dep_dot_formatter),
-          parenless_call <- dep_opts[:export][:locals_without_parens] || [],
-          uniq: true,
-          do: parenless_call
-
-    Keyword.update(
-      formatter_opts,
-      :locals_without_parens,
-      parenless_calls,
-      &(&1 ++ parenless_calls)
-    )
+    for dep <- deps,
+        dep_path = assert_valid_dep_and_fetch_path(dep, deps_paths),
+        dep_dot_formatter = Path.join(dep_path, ".formatter.exs"),
+        File.regular?(dep_dot_formatter),
+        dep_opts = eval_file_with_keyword_list(dep_dot_formatter),
+        parenless_call <- dep_opts[:export][:locals_without_parens] || [],
+        uniq: true,
+        do: parenless_call
   end
 
   defp eval_subs_opts(subs, prefix, sources) do
@@ -390,21 +429,14 @@ defmodule Mix.Tasks.Format do
   end
 
   defp assert_valid_dep_and_fetch_path(dep, deps_paths) when is_atom(dep) do
-    case Map.fetch(deps_paths, dep) do
-      {:ok, path} ->
-        if File.dir?(path) do
-          path
-        else
-          Mix.raise(
-            "Unavailable dependency #{inspect(dep)} given to :import_deps in the formatter configuration. " <>
-              "The dependency cannot be found in the file system, please run \"mix deps.get\" and try again"
-          )
-        end
-
-      :error ->
+    with %{^dep => path} <- deps_paths,
+         true <- File.dir?(path) do
+      path
+    else
+      _ ->
         Mix.raise(
           "Unknown dependency #{inspect(dep)} given to :import_deps in the formatter configuration. " <>
-            "The dependency is not listed in your mix.exs for environment #{inspect(Mix.env())}"
+            "Make sure the dependency is listed in your mix.exs and you have run \"mix deps.get\""
         )
     end
   end
@@ -423,7 +455,7 @@ defmodule Mix.Tasks.Format do
     opts
   end
 
-  defp expand_args([], dot_formatter, formatter_opts_and_subs) do
+  defp expand_args([], dot_formatter, formatter_opts_and_subs, _opts) do
     if no_entries_in_formatter_opts?(formatter_opts_and_subs) do
       Mix.raise(
         "Expected one or more files/patterns to be given to mix format " <>
@@ -438,7 +470,7 @@ defmodule Mix.Tasks.Format do
     end)
   end
 
-  defp expand_args(files_and_patterns, _dot_formatter, {formatter_opts, subs}) do
+  defp expand_args(files_and_patterns, _dot_formatter, {formatter_opts, subs}, opts) do
     files =
       for file_or_pattern <- files_and_patterns,
           file <- stdin_or_wildcard(file_or_pattern),
@@ -454,7 +486,12 @@ defmodule Mix.Tasks.Format do
 
     for file <- files do
       if file == :stdin do
-        {file, &elixir_format(&1, [file: "stdin"] ++ formatter_opts)}
+        stdin_filename = Keyword.get(opts, :stdin_filename, "stdin.exs")
+
+        {formatter, _opts} =
+          find_formatter_and_opts_for_file(stdin_filename, {formatter_opts, subs})
+
+        {file, formatter}
       else
         {formatter, _opts} = find_formatter_and_opts_for_file(file, {formatter_opts, subs})
         {file, formatter}
@@ -503,8 +540,12 @@ defmodule Mix.Tasks.Format do
     ext = Path.extname(file)
 
     cond do
-      plugin = find_plugin_for_extension(formatter_opts, ext) ->
-        &plugin.format(&1, [extension: ext] ++ formatter_opts)
+      plugins = find_plugins_for_extension(formatter_opts, ext) ->
+        fn input ->
+          Enum.reduce(plugins, input, fn plugin, input ->
+            plugin.format(input, [extension: ext, file: file] ++ formatter_opts)
+          end)
+        end
 
       ext in ~w(.ex .exs) ->
         &elixir_format(&1, [file: file] ++ formatter_opts)
@@ -514,13 +555,16 @@ defmodule Mix.Tasks.Format do
     end
   end
 
-  defp find_plugin_for_extension(formatter_opts, ext) do
+  defp find_plugins_for_extension(formatter_opts, ext) do
     plugins = Keyword.get(formatter_opts, :plugins, [])
 
-    Enum.find(plugins, fn plugin ->
-      Code.ensure_loaded?(plugin) and function_exported?(plugin, :features, 1) and
-        ext in List.wrap(plugin.features(formatter_opts)[:extensions])
-    end)
+    plugins =
+      Enum.filter(plugins, fn plugin ->
+        Code.ensure_loaded?(plugin) and function_exported?(plugin, :features, 1) and
+          ext in List.wrap(plugin.features(formatter_opts)[:extensions])
+      end)
+
+    if plugins != [], do: plugins, else: nil
   end
 
   defp find_formatter_and_opts_for_file(file, formatter_opts_and_subs) do
@@ -542,10 +586,15 @@ defmodule Mix.Tasks.Format do
   end
 
   defp stdin_or_wildcard("-"), do: [:stdin]
-  defp stdin_or_wildcard(path), do: path |> Path.expand() |> Path.wildcard(match_dot: true)
+
+  defp stdin_or_wildcard(path),
+    do: path |> Path.expand() |> Path.wildcard(match_dot: true) |> Enum.filter(&File.regular?/1)
 
   defp elixir_format(content, formatter_opts) do
-    IO.iodata_to_binary([Code.format_string!(content, formatter_opts), ?\n])
+    case Code.format_string!(content, formatter_opts) do
+      [] -> ""
+      formatted_content -> IO.iodata_to_binary([formatted_content, ?\n])
+    end
   end
 
   defp find_sigils_from_plugins(plugin, formatter_opts) do
@@ -567,7 +616,7 @@ defmodule Mix.Tasks.Format do
 
     cond do
       check_formatted? ->
-        if input == output, do: :ok, else: {:not_formatted, file}
+        if input == output, do: :ok, else: {:not_formatted, {file, input, output}}
 
       dry_run? ->
         :ok
@@ -619,11 +668,268 @@ defmodule Mix.Tasks.Format do
     mix format failed due to --check-formatted.
     The following files are not formatted:
 
-    #{to_bullet_list(not_formatted)}
+    #{to_diffs(not_formatted)}
     """)
   end
 
-  defp to_bullet_list(files) do
-    Enum.map_join(files, "\n", &"  * #{&1 |> to_string() |> Path.relative_to_cwd()}")
+  defp to_diffs(files) do
+    Enum.map_intersperse(files, "\n", fn
+      {:stdin, unformatted, formatted} ->
+        [IO.ANSI.reset(), text_diff_format(unformatted, formatted)]
+
+      {file, unformatted, formatted} ->
+        [
+          IO.ANSI.bright(),
+          IO.ANSI.red(),
+          file,
+          "\n",
+          IO.ANSI.reset(),
+          "\n",
+          text_diff_format(unformatted, formatted)
+        ]
+    end)
+  end
+
+  @doc false
+  @spec text_diff_format(String.t(), String.t()) :: iolist()
+  def text_diff_format(old, new, opts \\ [])
+
+  def text_diff_format(code, code, _opts), do: []
+
+  def text_diff_format(old, new, opts) do
+    opts = Keyword.validate!(opts, after: 2, before: 2, color: IO.ANSI.enabled?(), line: 1)
+    crs? = String.contains?(old, "\r") || String.contains?(new, "\r")
+
+    old = String.split(old, "\n")
+    new = String.split(new, "\n")
+
+    max = max(length(new), length(old))
+    line_num_digits = max |> Integer.digits() |> length()
+    opts = Keyword.put(opts, :line_num_digits, line_num_digits)
+
+    {line, opts} = Keyword.pop!(opts, :line)
+
+    old
+    |> List.myers_difference(new)
+    |> insert_cr_symbols(crs?)
+    |> diff_to_iodata({line, line}, opts)
+  end
+
+  defp diff_to_iodata(diff, line_nums, opts, iodata \\ [])
+
+  defp diff_to_iodata([], _line_nums, _opts, iodata), do: Enum.reverse(iodata)
+
+  defp diff_to_iodata([{:eq, [""]}], _line_nums, _opts, iodata), do: Enum.reverse(iodata)
+
+  defp diff_to_iodata([{:eq, lines}], line_nums, opts, iodata) do
+    lines_after = Enum.take(lines, opts[:after])
+    iodata = lines(iodata, {:eq, lines_after}, line_nums, opts)
+
+    iodata =
+      case length(lines) > opts[:after] do
+        false -> iodata
+        true -> lines(iodata, :skip, opts)
+      end
+
+    Enum.reverse(iodata)
+  end
+
+  defp diff_to_iodata([{:eq, lines} | diff], {line, line}, opts, [] = iodata) do
+    {start, lines_before} = Enum.split(lines, opts[:before] * -1)
+
+    iodata =
+      case length(lines) > opts[:before] do
+        false -> iodata
+        true -> lines(iodata, :skip, opts)
+      end
+
+    line = line + length(start)
+    iodata = lines(iodata, {:eq, lines_before}, {line, line}, opts)
+
+    line = line + length(lines_before)
+    diff_to_iodata(diff, {line, line}, opts, iodata)
+  end
+
+  defp diff_to_iodata([{:eq, lines} | diff], line_nums, opts, iodata) do
+    case length(lines) > opts[:after] + opts[:before] do
+      true ->
+        {lines1, lines2, lines3} = split(lines, opts[:after], opts[:before] * -1)
+
+        iodata =
+          iodata
+          |> lines({:eq, lines1}, line_nums, opts)
+          |> lines(:skip, opts)
+          |> lines({:eq, lines3}, add_line_nums(line_nums, length(lines1) + length(lines2)), opts)
+
+        line_nums = add_line_nums(line_nums, length(lines))
+
+        diff_to_iodata(diff, line_nums, opts, iodata)
+
+      false ->
+        iodata = lines(iodata, {:eq, lines}, line_nums, opts)
+        line_nums = add_line_nums(line_nums, length(lines))
+
+        diff_to_iodata(diff, line_nums, opts, iodata)
+    end
+  end
+
+  defp diff_to_iodata([{:del, [del]}, {:ins, [ins]} | diff], line_nums, opts, iodata) do
+    iodata = lines(iodata, {:chg, del, ins}, line_nums, opts)
+    diff_to_iodata(diff, add_line_nums(line_nums, 1), opts, iodata)
+  end
+
+  defp diff_to_iodata([{kind, lines} | diff], line_nums, opts, iodata) do
+    iodata = lines(iodata, {kind, lines}, line_nums, opts)
+    line_nums = add_line_nums(line_nums, length(lines), kind)
+
+    diff_to_iodata(diff, line_nums, opts, iodata)
+  end
+
+  defp split(list, count1, count2) do
+    {split1, split2} = Enum.split(list, count1)
+    {split2, split3} = Enum.split(split2, count2)
+    {split1, split2, split3}
+  end
+
+  defp lines(iodata, :skip, opts) do
+    line_num = String.duplicate(@blank, opts[:line_num_digits] * 2 + 1)
+    [[line_num, @gutter[:skip], @separator, @newline] | iodata]
+  end
+
+  defp lines(iodata, {:chg, del, ins}, line_nums, opts) do
+    {del, ins} = line_diff(del, ins, opts)
+
+    [
+      [gutter(line_nums, :ins, opts), ins, @newline],
+      [gutter(line_nums, :del, opts), del, @newline]
+      | iodata
+    ]
+  end
+
+  defp lines(iodata, {kind, lines}, line_nums, opts) do
+    lines
+    |> Enum.with_index()
+    |> Enum.reduce(iodata, fn {line, offset}, iodata ->
+      line_nums = add_line_nums(line_nums, offset, kind)
+      [[gutter(line_nums, kind, opts), colorize(line, kind, false, opts), @newline] | iodata]
+    end)
+  end
+
+  defp gutter(line_nums, kind, opts) do
+    [line_num(line_nums, kind, opts), colorize(@gutter[kind], kind, false, opts), @separator]
+  end
+
+  defp line_num({line_num_old, line_num_new}, :eq, opts) do
+    old =
+      line_num_old
+      |> to_string()
+      |> String.pad_leading(opts[:line_num_digits], @line_num_pad)
+
+    new =
+      line_num_new
+      |> to_string()
+      |> String.pad_leading(opts[:line_num_digits], @line_num_pad)
+
+    [old, @blank, new]
+  end
+
+  defp line_num({line_num_old, _line_num_new}, :del, opts) do
+    old =
+      line_num_old
+      |> to_string()
+      |> String.pad_leading(opts[:line_num_digits], @line_num_pad)
+
+    new = String.duplicate(@blank, opts[:line_num_digits])
+    [old, @blank, new]
+  end
+
+  defp line_num({_line_num_old, line_num_new}, :ins, opts) do
+    old = String.duplicate(@blank, opts[:line_num_digits])
+
+    new =
+      line_num_new
+      |> to_string()
+      |> String.pad_leading(opts[:line_num_digits], @line_num_pad)
+
+    [old, @blank, new]
+  end
+
+  defp line_diff(del, ins, opts) do
+    diff = String.myers_difference(del, ins)
+
+    Enum.reduce(diff, {[], []}, fn
+      {:eq, str}, {del, ins} -> {[del | str], [ins | str]}
+      {:del, str}, {del, ins} -> {[del | colorize(str, :del, true, opts)], ins}
+      {:ins, str}, {del, ins} -> {del, [ins | colorize(str, :ins, true, opts)]}
+    end)
+  end
+
+  defp colorize(str, kind, space?, opts) do
+    if Keyword.fetch!(opts, :color) && Keyword.has_key?(@colors, kind) do
+      color = Keyword.fetch!(@colors, kind)
+
+      if space? do
+        str
+        |> String.split(~r/[\t\s]+/, include_captures: true)
+        |> Enum.map(fn
+          <<start::binary-size(1), _::binary>> = str when start in ["\t", "\s"] ->
+            IO.ANSI.format([color[:space], str])
+
+          str ->
+            IO.ANSI.format([color[:text], str])
+        end)
+      else
+        IO.ANSI.format([color[:text], str])
+      end
+    else
+      str
+    end
+  end
+
+  defp add_line_nums({line_num_old, line_num_new}, lines, kind \\ :eq) do
+    case kind do
+      :eq -> {line_num_old + lines, line_num_new + lines}
+      :ins -> {line_num_old, line_num_new + lines}
+      :del -> {line_num_old + lines, line_num_new}
+    end
+  end
+
+  defp insert_cr_symbols(diffs, false), do: diffs
+  defp insert_cr_symbols(diffs, true), do: do_insert_cr_symbols(diffs, [])
+
+  defp do_insert_cr_symbols([], acc), do: Enum.reverse(acc)
+
+  defp do_insert_cr_symbols([{:del, del}, {:ins, ins} | rest], acc) do
+    {del, ins} = do_insert_cr_symbols(del, ins, {[], []})
+    do_insert_cr_symbols(rest, [{:ins, ins}, {:del, del} | acc])
+  end
+
+  defp do_insert_cr_symbols([diff | rest], acc) do
+    do_insert_cr_symbols(rest, [diff | acc])
+  end
+
+  defp do_insert_cr_symbols([left | left_rest], [right | right_rest], {left_acc, right_acc}) do
+    {left, right} = insert_cr_symbol(left, right)
+    do_insert_cr_symbols(left_rest, right_rest, {[left | left_acc], [right | right_acc]})
+  end
+
+  defp do_insert_cr_symbols([], right, {left_acc, right_acc}) do
+    left = Enum.reverse(left_acc)
+    right = right_acc |> Enum.reverse() |> Enum.concat(right)
+    {left, right}
+  end
+
+  defp do_insert_cr_symbols(left, [], {left_acc, right_acc}) do
+    left = left_acc |> Enum.reverse() |> Enum.concat(left)
+    right = Enum.reverse(right_acc)
+    {left, right}
+  end
+
+  defp insert_cr_symbol(left, right) do
+    case {String.ends_with?(left, "\r"), String.ends_with?(right, "\r")} do
+      {bool, bool} -> {left, right}
+      {true, false} -> {String.replace(left, "\r", @cr), right}
+      {false, true} -> {left, String.replace(right, "\r", @cr)}
+    end
   end
 end

@@ -182,7 +182,7 @@ defmodule Kernel.SpecialForms do
       <<1, 2, 3>>
 
   Elixir also accepts by default the segment to be a literal
-  string or a literal charlist, which are by default expanded to integers:
+  string which expands to integers:
 
       iex> <<0, "foo">>
       <<0, 102, 111, 111>>
@@ -604,11 +604,12 @@ defmodule Kernel.SpecialForms do
 
       import List
 
-  A developer can filter to import only macros or functions via
-  the only option:
+  A developer can filter to import only functions, macros, or sigils
+  (which can be functions or macros) via the `:only` option:
 
       import List, only: :functions
       import List, only: :macros
+      import Kernel, only: :sigils
 
   Alternatively, Elixir allows a developer to pass pairs of
   name/arities to `:only` or `:except` as a fine grained control
@@ -778,7 +779,7 @@ defmodule Kernel.SpecialForms do
 
       <<int::integer-little, rest::bits>> = bits
 
-  Read the documentation on the `Typespec` page and
+  Read the documentation on the [Typespecs page](typespecs.md) and
   `<<>>/1` for more information on typespecs and
   bitstrings respectively.
   """
@@ -959,7 +960,7 @@ defmodule Kernel.SpecialForms do
       import Math
       squared(5)
       x
-      ** (CompileError) undefined variable x or undefined function x/0
+      ** (CompileError) undefined variable "x"
 
   We can see that `x` did not leak to the user context. This happens
   because Elixir macros are hygienic, a topic we will discuss at length
@@ -1046,6 +1047,17 @@ defmodule Kernel.SpecialForms do
       ContextHygiene.write()
       ContextHygiene.read()
       #=> 1
+
+  The contexts of a variable is identified by the third element of the tuple.
+  The default context is `nil` and `quote` assigns another context to all
+  variables within:
+
+      quote(do: var)
+      #=> {:var, [], Elixir}
+
+  In case of variables returned by macros, there may also be a `:counter` key
+  in the metadata, which is used to further refine its contexts and guarantee
+  isolation between macro invocations as seen in the previous example.
 
   ## Hygiene in aliases
 
@@ -1211,7 +1223,9 @@ defmodule Kernel.SpecialForms do
   reported to where `defadd` was invoked. `location: :keep` affects
   only definitions inside the quote.
 
-  > **Important:** do not use location: :keep if the function definition
+  > #### `location: :keep` and unquote {: .warning}
+  >
+  > Do not use `location: :keep` if the function definition
   > also `unquote`s some of the macro arguments. If you do so, Elixir
   > will store the file definition of the current location but the
   > unquoted arguments may contain line information of the macro caller,
@@ -1319,7 +1333,7 @@ defmodule Kernel.SpecialForms do
   Which the argument for the `:sum` function call is not the
   expected result:
 
-      {:sum, [], [1, {:value, [if_undefined: :apply], Elixir}, 3]}
+      {:sum, [], [1, {:value, [], Elixir}, 3]}
 
   For this, we use `unquote`:
 
@@ -1637,7 +1651,7 @@ defmodule Kernel.SpecialForms do
         {:ok, backup_path}
       end
 
-      defp validate_extname(path) do
+      defp validate_extension(path) do
         if Path.extname(path) == ".ex", do: :ok, else: {:error, :invalid_extension}
       end
 
@@ -1646,7 +1660,7 @@ defmodule Kernel.SpecialForms do
       end
 
   Note how the code above is better organized and clearer once we
-  make sure each clause in `with` returns a normalize format.
+  make sure each clause in `with` returns a normalized format.
   """
   defmacro with(args), do: error!([args])
 

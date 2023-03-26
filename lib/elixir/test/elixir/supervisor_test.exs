@@ -106,11 +106,11 @@ defmodule SupervisorTest do
   end
 
   test "init/2" do
-    flags = %{intensity: 3, period: 5, strategy: :one_for_one}
+    flags = %{intensity: 3, period: 5, strategy: :one_for_one, auto_shutdown: :never}
     children = [%{id: Task, restart: :temporary, start: {Task, :start_link, [[]]}}]
     assert Supervisor.init([Task], strategy: :one_for_one) == {:ok, {flags, children}}
 
-    flags = %{intensity: 1, period: 2, strategy: :one_for_all}
+    flags = %{intensity: 1, period: 2, strategy: :one_for_all, auto_shutdown: :never}
     children = [%{id: Task, restart: :temporary, start: {Task, :start_link, [:foo]}}]
 
     assert Supervisor.init(
@@ -126,7 +126,7 @@ defmodule SupervisorTest do
   end
 
   test "init/2 with old and new child specs" do
-    flags = %{intensity: 3, period: 5, strategy: :one_for_one}
+    flags = %{intensity: 3, period: 5, strategy: :one_for_one, auto_shutdown: :never}
 
     children = [
       %{id: Task, restart: :temporary, start: {Task, :start_link, [[]]}},
@@ -227,6 +227,26 @@ defmodule SupervisorTest do
 
       assert Supervisor.start_child(pid, %{id: 1, start: {Task, :foo, :bar}}) ==
                {:error, {:invalid_mfa, {Task, :foo, :bar}}}
+
+      assert Supervisor.start_child(pid, %{id: 1, start: {Task, :foo, [:bar]}, shutdown: -1}) ==
+               {:error, {:invalid_shutdown, -1}}
+    end
+
+    test "with valid child spec" do
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} = Supervisor.start_link([], strategy: :one_for_one)
+
+      for n <- 0..1 do
+        assert {:ok, child_pid} =
+                 Supervisor.start_child(pid, %{
+                   id: n,
+                   start: {Task, :start_link, [fn -> Process.sleep(:infinity) end]},
+                   shutdown: n
+                 })
+
+        assert_kill(child_pid, :shutdown)
+      end
     end
   end
 
@@ -260,5 +280,11 @@ defmodule SupervisorTest do
     unless Process.whereis(name) do
       wait_until_registered(name)
     end
+  end
+
+  defp assert_kill(pid, reason) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, reason)
+    assert_receive {:DOWN, ^ref, _, _, _}
   end
 end

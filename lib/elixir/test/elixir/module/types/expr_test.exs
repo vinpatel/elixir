@@ -68,12 +68,16 @@ defmodule Module.Types.ExprTest do
       assert quoted_expr(<<"foo"::utf8>>) == {:ok, :binary}
     end
 
+    defmacrop custom_type do
+      quote do: 1 * 8 - big - signed - integer
+    end
+
     test "variable" do
       assert quoted_expr([foo], <<foo::little>>) == {:ok, :binary}
       assert quoted_expr([foo], <<foo::integer>>) == {:ok, :binary}
-      assert quoted_expr([foo], <<foo::integer()>>) == {:ok, :binary}
       assert quoted_expr([foo], <<foo::integer-little>>) == {:ok, :binary}
       assert quoted_expr([foo], <<foo::little-integer>>) == {:ok, :binary}
+      assert quoted_expr([foo], <<foo::custom_type()>>) == {:ok, :binary}
     end
 
     test "infer" do
@@ -221,6 +225,31 @@ defmodule Module.Types.ExprTest do
                case a do
                  :foo when is_binary(b) -> b <> ""
                  :foo when is_list(b) -> b
+               end
+             ) == {:ok, :dynamic}
+    end
+  end
+
+  describe "cond" do
+    test "do not leak body inference between clauses" do
+      assert quoted_expr(
+               [],
+               cond do
+                 1 ->
+                   b = :foo
+                   b
+
+                 2 ->
+                   b = :bar
+                   b
+               end
+             ) == {:ok, :dynamic}
+
+      assert quoted_expr(
+               [b],
+               cond do
+                 1 -> :foo = b
+                 2 -> :bar = b
                end
              ) == {:ok, :dynamic}
     end

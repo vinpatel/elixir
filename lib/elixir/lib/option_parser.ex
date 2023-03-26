@@ -29,7 +29,12 @@ defmodule OptionParser do
   @type argv :: [String.t()]
   @type parsed :: keyword
   @type errors :: [{String.t(), String.t() | nil}]
-  @type options :: [switches: keyword, strict: keyword, aliases: keyword]
+  @type options :: [
+          switches: keyword,
+          strict: keyword,
+          aliases: keyword,
+          allow_nonexistent_atoms: boolean
+        ]
 
   defmodule ParseError do
     defexception [:message]
@@ -487,7 +492,7 @@ defmodule OptionParser do
   Keys must be atoms. Keys with `nil` value are discarded,
   boolean values are converted to `--key` or `--no-key`
   (if the value is `true` or `false`, respectively),
-  and all other values are converted using `Kernel.to_string/1`.
+  and all other values are converted using `to_string/1`.
 
   It is advised to pass to `to_argv/2` the same set of `options`
   given to `parse/2`. Some switches can only be reconstructed

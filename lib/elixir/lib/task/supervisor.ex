@@ -35,7 +35,7 @@ defmodule Task.Supervisor do
   Instead of:
 
       children = [
-        {Task.Supervisor, name: Task.Supervisor}
+        {Task.Supervisor, name: MyApp.TaskSupervisor}
       ]
 
   and:
@@ -164,7 +164,7 @@ defmodule Task.Supervisor do
       or an integer indicating the timeout value, defaults to 5000 milliseconds.
 
   """
-  @spec async(Supervisor.supervisor(), (() -> any), Keyword.t()) :: Task.t()
+  @spec async(Supervisor.supervisor(), (-> any), Keyword.t()) :: Task.t()
   def async(supervisor, fun, options \\ []) do
     async(supervisor, :erlang, :apply, [fun, []], options)
   end
@@ -199,6 +199,10 @@ defmodule Task.Supervisor do
 
   Raises an error if `supervisor` has reached the maximum number of
   children.
+
+  Note this function requires the task supervisor to have `:temporary`
+  as the `:restart` option (the default), as `async_nolink/3` keeps a
+  direct reference to the task which is lost if the task is restarted.
 
   ## Options
 
@@ -267,7 +271,7 @@ defmodule Task.Supervisor do
       end
 
   """
-  @spec async_nolink(Supervisor.supervisor(), (() -> any), Keyword.t()) :: Task.t()
+  @spec async_nolink(Supervisor.supervisor(), (-> any), Keyword.t()) :: Task.t()
   def async_nolink(supervisor, fun, options \\ []) do
     async_nolink(supervisor, :erlang, :apply, [fun, []], options)
   end
@@ -453,7 +457,7 @@ defmodule Task.Supervisor do
       or an integer indicating the timeout value, defaults to 5000 milliseconds.
 
   """
-  @spec start_child(Supervisor.supervisor(), (() -> any), keyword) ::
+  @spec start_child(Supervisor.supervisor(), (-> any), keyword) ::
           DynamicSupervisor.on_start_child()
   def start_child(supervisor, fun, options \\ []) do
     restart = options[:restart]
@@ -474,16 +478,37 @@ defmodule Task.Supervisor do
       when is_atom(fun) and is_list(args) do
     restart = options[:restart]
     shutdown = options[:shutdown]
-    args = [get_owner(self()), get_callers(self()), {module, fun, args}]
-    start_child_with_spec(supervisor, args, restart, shutdown)
+    mfa = {module, fun, args}
+    owner = get_owner(self())
+    callers = get_callers(self())
+
+    if restart == :temporary or restart == nil do
+      start_child_maybe_temporary(supervisor, owner, callers, restart, shutdown, mfa)
+    else
+      start_child_with_spec(supervisor, [owner, callers, mfa], restart, shutdown)
+    end
+  end
+
+  defp start_child_maybe_temporary(supervisor, owner, callers, restart, shutdown, mfa) do
+    case start_child_with_spec(supervisor, [owner, :monitor], restart, shutdown) do
+      # TODO: This only exists because we need to support reading restart/shutdown
+      # from two different places. Remove this, the init function and the associated
+      # clause in DynamicSupervisor on Elixir v2.0
+      {:restart, restart} ->
+        start_child_with_spec(supervisor, [owner, callers, mfa], restart, shutdown)
+
+      {:ok, pid} ->
+        # We mimic async but there is nothing to reply to
+        alias = make_ref()
+        send(pid, {self(), alias, alias, callers, mfa})
+        {:ok, pid}
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   defp start_child_with_spec(supervisor, args, restart, shutdown) do
-    # TODO: This only exists because we need to support reading restart/shutdown
-    # from two different places. Remove this, the init function and the associated
-    # clause in DynamicSupervisor on Elixir v2.0
-    # TODO: Once we do this, we can also make it so the task arguments are never
-    # sent to the supervisor if the restart is temporary
     GenServer.call(supervisor, {:start_task, args, restart, shutdown}, :infinity)
   end
 
@@ -504,9 +529,6 @@ defmodule Task.Supervisor do
     end
   end
 
-  # TODO: Remove conditional on Erlang/OTP 24
-  @compile {:no_warn_undefined, {:erlang, :monitor, 3}}
-
   defp async(supervisor, link_type, module, fun, args, options) do
     owner = self()
     shutdown = options[:shutdown]
@@ -514,17 +536,9 @@ defmodule Task.Supervisor do
     case start_child_with_spec(supervisor, [get_owner(owner), :monitor], :temporary, shutdown) do
       {:ok, pid} ->
         if link_type == :link, do: Process.link(pid)
-
-        {reply_to, ref} =
-          if function_exported?(:erlang, :monitor, 3) do
-            ref = :erlang.monitor(:process, pid, alias: :demonitor)
-            {ref, ref}
-          else
-            {owner, Process.monitor(pid)}
-          end
-
-        send(pid, {owner, ref, reply_to, get_callers(owner), {module, fun, args}})
-        %Task{pid: pid, ref: ref, owner: owner}
+        alias = :erlang.monitor(:process, pid, alias: :demonitor)
+        send(pid, {owner, alias, alias, get_callers(owner), {module, fun, args}})
+        %Task{pid: pid, ref: alias, owner: owner, mfa: {module, fun, length(args)}}
 
       {:error, :max_children} ->
         raise """

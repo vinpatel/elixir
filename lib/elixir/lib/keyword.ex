@@ -33,7 +33,7 @@ defmodule Keyword do
   ## Duplicate keys and ordering
 
   A keyword may have duplicate keys so it is not strictly a key-value
-  data type. However most of the functions in this module work on a
+  data type. However, most of the functions in this module work on a
   key-value structure and behave similar to the functions you would
   find in the `Map` module. For example, `Keyword.get/3` will get the first
   entry matching the given key, regardless if duplicate entries exist.
@@ -416,7 +416,7 @@ defmodule Keyword do
       13
 
   """
-  @spec get_lazy(t, key, (() -> value)) :: value
+  @spec get_lazy(t, key, (-> value)) :: value
   def get_lazy(keywords, key, fun)
       when is_list(keywords) and is_atom(key) and is_function(fun, 0) do
     case :lists.keyfind(key, 1, keywords) do
@@ -526,7 +526,7 @@ defmodule Keyword do
       {1, []}
 
   """
-  @spec get_and_update!(t, key, (value | nil -> {current_value, new_value :: value} | :pop)) ::
+  @spec get_and_update!(t, key, (value -> {current_value, new_value :: value} | :pop)) ::
           {current_value, new_keywords :: t}
         when current_value: value
   def get_and_update!(keywords, key, fun) do
@@ -794,7 +794,7 @@ defmodule Keyword do
       [b: 13, a: 1]
 
   """
-  @spec put_new_lazy(t, key, (() -> value)) :: t
+  @spec put_new_lazy(t, key, (-> value)) :: t
   def put_new_lazy(keywords, key, fun)
       when is_list(keywords) and is_atom(key) and is_function(fun, 0) do
     case :lists.keyfind(key, 1, keywords) do
@@ -901,7 +901,7 @@ defmodule Keyword do
 
       iex> Keyword.replace_lazy([a: 1, b: 2], :a, fn v -> v * 4 end)
       [a: 4, b: 2]
-      
+
       iex> Keyword.replace_lazy([a: 2, b: 2, a: 1], :a, fn v -> v * 4 end)
       [a: 8, b: 2]
 
@@ -1186,6 +1186,45 @@ defmodule Keyword do
   end
 
   @doc """
+  Splits the `keywords` into two keyword lists according to the given function
+  `fun`.
+
+  The provided `fun` receives each `{key, value}` pair in the `keywords` as its only
+  argument. Returns a tuple with the first keyword list containing all the
+  elements in `keywords` for which applying `fun` returned a truthy value, and
+  a second keyword list with all the elements for which applying `fun` returned
+  a falsy value (`false` or `nil`).
+
+  ## Examples
+
+      iex> Keyword.split_with([a: 1, b: 2, c: 3], fn {_k, v} -> rem(v, 2) == 0 end)
+      {[b: 2], [a: 1, c: 3]}
+
+      iex> Keyword.split_with([a: 1, b: 2, c: 3, b: 4], fn {_k, v} -> rem(v, 2) == 0 end)
+      {[b: 2, b: 4], [a: 1, c: 3]}
+
+      iex> Keyword.split_with([a: 1, b: 2, c: 3, b: 4], fn {k, v} -> k in [:a, :c] and rem(v, 2) == 0 end)
+      {[], [a: 1, b: 2, c: 3, b: 4]}
+
+      iex> Keyword.split_with([], fn {_k, v} -> rem(v, 2) == 0 end)
+      {[], []}
+
+  """
+  @doc since: "1.15.0"
+  @spec split_with(t, ({key, value} -> as_boolean(term))) :: {t, t}
+  def split_with(keywords, fun) when is_list(keywords) and is_function(fun, 1) do
+    fun = fn key_value_pair, {while_true, while_false} ->
+      if fun.(key_value_pair) do
+        {[key_value_pair | while_true], while_false}
+      else
+        {while_true, [key_value_pair | while_false]}
+      end
+    end
+
+    :lists.foldr(fun, {[], []}, keywords)
+  end
+
+  @doc """
   Takes all entries corresponding to the given `keys` and returns them as a new
   keyword list.
 
@@ -1201,7 +1240,7 @@ defmodule Keyword do
   """
   @spec take(t, [key]) :: t
   def take(keywords, keys) when is_list(keywords) and is_list(keys) do
-    :lists.filter(fn {k, _} -> k in keys end, keywords)
+    :lists.filter(fn {k, _} -> :lists.member(k, keys) end, keywords)
   end
 
   @doc """
@@ -1336,7 +1375,7 @@ defmodule Keyword do
       {13, [a: 1]}
 
   """
-  @spec pop_lazy(t, key, (() -> value)) :: {value, t}
+  @spec pop_lazy(t, key, (-> value)) :: {value, t}
   def pop_lazy(keywords, key, fun)
       when is_list(keywords) and is_atom(key) and is_function(fun, 0) do
     case fetch(keywords, key) do

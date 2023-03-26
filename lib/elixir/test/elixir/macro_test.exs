@@ -44,7 +44,7 @@ defmodule MacroTest do
 
     test "escapes bitstring" do
       assert {:<<>>, [], args} = Macro.escape(<<300::12>>)
-      assert [{:"::", [], [1, {:size, [], [4]}]}, {:"::", [], [",", {:binary, [], []}]}] = args
+      assert [{:"::", [], [1, {:size, [], [4]}]}, {:"::", [], [",", {:binary, [], nil}]}] = args
     end
 
     test "escapes recursively" do
@@ -172,10 +172,18 @@ defmodule MacroTest do
     end
 
     test "env" do
-      env = %{__ENV__ | line: 0}
-      assert Macro.expand_once(quote(do: __ENV__), env) == {:%{}, [], Map.to_list(env)}
+      env = %{__ENV__ | line: 0, lexical_tracker: self()}
+
+      expanded = Macro.expand_once(quote(do: __ENV__), env)
+      assert Macro.validate(expanded) == :ok
+      assert Code.eval_quoted(expanded) == {env, []}
+
       assert Macro.expand_once(quote(do: __ENV__.file), env) == env.file
       assert Macro.expand_once(quote(do: __ENV__.unknown), env) == quote(do: __ENV__.unknown)
+
+      expanded = Macro.expand_once(quote(do: __ENV__.versioned_vars), env)
+      assert Macro.validate(expanded) == :ok
+      assert Code.eval_quoted(expanded) == {env.versioned_vars, []}
     end
 
     defmacro local_macro(), do: raise("ignored")
@@ -226,6 +234,16 @@ defmodule MacroTest do
       assert Macro.expand_once(expr, __ENV__) == expr
     end
 
+    test "propagates generated" do
+      assert {:||, meta, [1, false]} = Macro.expand_once(quote(do: oror(1, false)), __ENV__)
+      refute meta[:generated]
+
+      assert {:||, meta, [1, false]} =
+               Macro.expand_once(quote(generated: true, do: oror(1, false)), __ENV__)
+
+      assert meta[:generated]
+    end
+
     test "does not expand module attributes" do
       message =
         "could not call Module.get_attribute/2 because the module #{inspect(__MODULE__)} " <>
@@ -259,14 +277,297 @@ defmodule MacroTest do
     assert expand_and_clean(quote(do: oror(1, false)), __ENV__) == quoted
   end
 
+  test "expand_literals/2" do
+    assert Macro.expand_literals(quote(do: Foo), __ENV__) == Foo
+    assert Macro.expand_literals(quote(do: Foo + Bar), __ENV__) == quote(do: Foo + Bar)
+    assert Macro.expand_literals(quote(do: __MODULE__), __ENV__) == __MODULE__
+    assert Macro.expand_literals(quote(do: __MODULE__.Foo), __ENV__) == __MODULE__.Foo
+    assert Macro.expand_literals(quote(do: [Foo, 1 + 2]), __ENV__) == [Foo, quote(do: 1 + 2)]
+  end
+
+  test "expand_literals/3" do
+    fun = fn node, acc ->
+      expanded = Macro.expand(node, __ENV__)
+      {expanded, [expanded | acc]}
+    end
+
+    assert Macro.expand_literals(quote(do: Foo), [], fun) == {Foo, [Foo]}
+    assert Macro.expand_literals(quote(do: Foo + Bar), [], fun) == {quote(do: Foo + Bar), []}
+    assert Macro.expand_literals(quote(do: __MODULE__), [], fun) == {__MODULE__, [__MODULE__]}
+
+    assert Macro.expand_literals(quote(do: __MODULE__.Foo), [], fun) ==
+             {__MODULE__.Foo, [__MODULE__.Foo, __MODULE__]}
+  end
+
   test "var/2" do
     assert Macro.var(:foo, nil) == {:foo, [], nil}
     assert Macro.var(:foo, Other) == {:foo, [], Other}
   end
 
+  describe "dbg/3" do
+    defmacrop dbg_format(ast, options \\ quote(do: [syntax_colors: []])) do
+      quote do
+        {result, formatted} =
+          ExUnit.CaptureIO.with_io(fn ->
+            unquote(Macro.dbg(ast, options, __CALLER__))
+          end)
+
+        # Make sure there's an empty line after the output.
+        assert String.ends_with?(formatted, "\n\n") or
+                 String.ends_with?(formatted, "\n\n" <> IO.ANSI.reset())
+
+        {result, formatted}
+      end
+    end
+
+    test "with a simple expression" do
+      {result, formatted} = dbg_format(1 + 1)
+      assert result == 2
+      assert formatted =~ "1 + 1 #=> 2"
+    end
+
+    test "with variables" do
+      my_var = 1 + 1
+      {result, formatted} = dbg_format(my_var)
+      assert result == 2
+      assert formatted =~ "my_var #=> 2"
+    end
+
+    test "with a function call" do
+      {result, formatted} = dbg_format(Atom.to_string(:foo))
+
+      assert result == "foo"
+      assert formatted =~ ~s[Atom.to_string(:foo) #=> "foo"]
+    end
+
+    test "with a multiline input" do
+      {result, formatted} =
+        dbg_format(
+          case 1 + 1 do
+            2 -> :two
+            _other -> :math_is_broken
+          end
+        )
+
+      assert result == :two
+
+      assert formatted =~ """
+             case 1 + 1 do
+               2 -> :two
+               _other -> :math_is_broken
+             end #=> :two
+             """
+    end
+
+    test "with a pipeline on a single line" do
+      {result, formatted} = dbg_format([:a, :b, :c] |> tl() |> tl |> Kernel.hd())
+      assert result == :c
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             \n[:a, :b, :c] #=> [:a, :b, :c]
+             |> tl() #=> [:b, :c]
+             |> tl #=> [:c]
+             |> Kernel.hd() #=> :c
+             """
+
+      # Regression for pipes sometimes erroneously ending with three newlines (one
+      # extra than needed).
+      assert formatted =~ ~r/[^\n]\n\n$/
+    end
+
+    test "with a pipeline on multiple lines" do
+      {result, formatted} =
+        dbg_format(
+          [:a, :b, :c]
+          |> tl()
+          |> tl
+          |> Kernel.hd()
+        )
+
+      assert result == :c
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             \n[:a, :b, :c] #=> [:a, :b, :c]
+             |> tl() #=> [:b, :c]
+             |> tl #=> [:c]
+             |> Kernel.hd() #=> :c
+             """
+
+      # Regression for pipes sometimes erroneously ending with three newlines (one
+      # extra than needed).
+      assert formatted =~ ~r/[^\n]\n\n$/
+    end
+
+    test "with simple boolean expressions" do
+      {result, formatted} = dbg_format(:rand.uniform() < 0.0 and length([]) == 0)
+      assert result == false
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             :rand.uniform() < 0.0 #=> false
+             :rand.uniform() < 0.0 and length([]) == 0 #=> false
+             """
+    end
+
+    test "with left-associative operators" do
+      {result, formatted} = dbg_format(List.first([]) || "yes" || raise("foo"))
+      assert result == "yes"
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             List.first([]) #=> nil
+             List.first([]) || "yes" #=> "yes"
+             List.first([]) || "yes" || raise "foo" #=> "yes"
+             """
+    end
+
+    test "with composite boolean expressions" do
+      true1 = length([]) == 0
+      true2 = length([]) == 0
+      {result, formatted} = dbg_format((true1 and true2) or (List.first([]) || true1))
+
+      assert result == true
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             true1 #=> true
+             true1 and true2 #=> true
+             (true1 and true2) or (List.first([]) || true1) #=> true
+             """
+    end
+
+    test "with case" do
+      list = [1, 2, 3]
+
+      {result, formatted} =
+        dbg_format(
+          case list do
+            [] -> nil
+            _ -> Enum.sum(list)
+          end
+        )
+
+      assert result == 6
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             Case argument:
+             list #=> [1, 2, 3]
+
+             Case expression (clause #2 matched):
+             case list do
+               [] -> nil
+               _ -> Enum.sum(list)
+             end #=> 6
+             """
+    end
+
+    test "with case - guard" do
+      {result, formatted} =
+        dbg_format(
+          case 0..100//5 do
+            %{first: first, last: last, step: step} when last > first ->
+              count = div(last - first, step)
+              {:ok, count}
+
+            _ ->
+              :error
+          end
+        )
+
+      assert result == {:ok, 20}
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             Case argument:
+             0..100//5 #=> 0..100//5
+
+             Case expression (clause #1 matched):
+             case 0..100//5 do
+               %{first: first, last: last, step: step} when last > first ->
+                 count = div(last - first, step)
+                 {:ok, count}
+
+               _ ->
+                 :error
+             end #=> {:ok, 20}
+             """
+    end
+
+    test "with cond" do
+      map = %{b: 5}
+
+      {result, formatted} =
+        dbg_format(
+          cond do
+            a = map[:a] -> a + 1
+            b = map[:b] -> b * 2
+            true -> nil
+          end
+        )
+
+      assert result == 10
+
+      assert formatted =~ "macro_test.exs"
+
+      assert formatted =~ """
+             Cond clause (clause #2 matched):
+             b = map[:b] #=> 5
+
+             Cond expression:
+             cond do
+               a = map[:a] -> a + 1
+               b = map[:b] -> b * 2
+               true -> nil
+             end #=> 10
+             """
+    end
+
+    test "with \"syntax_colors: []\" it doesn't print any color sequences" do
+      {_result, formatted} = dbg_format("hello")
+      refute formatted =~ "\e["
+    end
+
+    test "with \"syntax_colors: [...]\" it forces color sequences" do
+      {_result, formatted} = dbg_format("hello", syntax_colors: [string: :cyan])
+      assert formatted =~ IO.iodata_to_binary(IO.ANSI.format([:cyan, ~s("hello")]))
+    end
+
+    test "forwards options to the underlying inspect calls" do
+      value = ~c"hello"
+      assert {^value, formatted} = dbg_format(value, syntax_colors: [], charlists: :as_lists)
+      assert formatted =~ "value #=> [104, 101, 108, 108, 111]\n"
+    end
+
+    test "with the :print_location option set to false, doesn't print any header" do
+      {result, formatted} = dbg_format("hello", print_location: false)
+      assert result == "hello"
+      refute formatted =~ Path.basename(__ENV__.file)
+    end
+  end
+
   describe "to_string/1" do
     test "converts quoted to string" do
       assert Macro.to_string(quote do: hello(world)) == "hello(world)"
+    end
+
+    test "large number literals" do
+      # with quote
+      assert Macro.to_string(quote do: 576_460_752_303_423_455) == "576_460_752_303_423_455"
+      assert Macro.to_string(quote do: -576_460_752_303_423_455) == "-576_460_752_303_423_455"
+
+      # without quote
+      assert Macro.to_string(576_460_752_303_423_455) == "576_460_752_303_423_455"
+      assert Macro.to_string(-576_460_752_303_423_455) == "-576_460_752_303_423_455"
     end
   end
 
@@ -598,7 +899,7 @@ defmodule MacroTest do
     end
 
     test "when" do
-      assert macro_to_string(quote(do: (() -> x))) == "(() -> x)"
+      assert macro_to_string(quote(do: (-> x))) == "(() -> x)"
       assert macro_to_string(quote(do: (x when y -> z))) == "(x when y -> z)"
       assert macro_to_string(quote(do: (x, y when z -> w))) == "((x, y) when z -> w)"
       assert macro_to_string(quote(do: (x, y when z -> w))) == "((x, y) when z -> w)"
@@ -720,7 +1021,8 @@ defmodule MacroTest do
 
     test "charlist" do
       assert macro_to_string(quote(do: [])) == "[]"
-      assert macro_to_string(quote(do: 'abc')) == "'abc'"
+      assert macro_to_string(quote(do: ~c"abc")) == ~S/~c"abc"/
+      assert macro_to_string(quote(do: [?a, ?b, ?c])) == ~S/~c"abc"/
     end
 
     test "string" do
@@ -793,6 +1095,10 @@ defmodule MacroTest do
   describe "env" do
     doctest Macro.Env
 
+    test "inspect" do
+      assert inspect(__ENV__) =~ "#Macro.Env<"
+    end
+
     test "prune_compile_info" do
       assert %Macro.Env{lexical_tracker: nil, tracers: []} =
                Macro.Env.prune_compile_info(%{__ENV__ | lexical_tracker: self(), tracers: [Foo]})
@@ -802,15 +1108,18 @@ defmodule MacroTest do
       env = %{__ENV__ | file: "foo", line: 12}
 
       assert Macro.Env.stacktrace(env) ==
-               [{__MODULE__, :"test env stacktrace", 1, [file: 'foo', line: 12]}]
+               [{__MODULE__, :"test env stacktrace", 1, [file: ~c"foo", line: 12]}]
 
       env = %{env | function: nil}
-      assert Macro.Env.stacktrace(env) == [{__MODULE__, :__MODULE__, 0, [file: 'foo', line: 12]}]
+
+      assert Macro.Env.stacktrace(env) == [
+               {__MODULE__, :__MODULE__, 0, [file: ~c"foo", line: 12]}
+             ]
 
       env = %{env | module: nil}
 
       assert Macro.Env.stacktrace(env) ==
-               [{:elixir_compiler, :__FILE__, 1, [file: 'foo', line: 12]}]
+               [{:elixir_compiler, :__FILE__, 1, [file: ~c"foo", line: 12]}]
     end
 
     test "context modules" do
@@ -850,6 +1159,9 @@ defmodule MacroTest do
     assert Macro.pipe(1, quote(do: foo), -1) == quote(do: foo(1))
     assert Macro.pipe(2, quote(do: foo(1)), -1) == quote(do: foo(1, 2))
 
+    assert Macro.pipe(quote(do: %{foo: "bar"}), quote(do: Access.get(:foo)), 0) ==
+             quote(do: Access.get(%{foo: "bar"}, :foo))
+
     assert_raise ArgumentError, ~r"cannot pipe 1 into 2", fn ->
       Macro.pipe(1, 2, 0)
     end
@@ -886,6 +1198,12 @@ defmodule MacroTest do
 
     assert_raise ArgumentError, message, fn ->
       Macro.pipe(:foo, quote(do: fn x -> x end), 0)
+    end
+
+    message = ~r"wrong operator precedence when piping into bracket-based access"
+
+    assert_raise ArgumentError, message, fn ->
+      Macro.pipe(:foo, quote(do: %{foo: bar}[:foo]), 0)
     end
   end
 
@@ -1085,7 +1403,16 @@ defmodule MacroTest do
     assert Macro.quoted_literal?(quote(do: {"foo", 1}))
     assert Macro.quoted_literal?(quote(do: %{foo: "bar"}))
     assert Macro.quoted_literal?(quote(do: %URI{path: "/"}))
+    assert Macro.quoted_literal?(quote(do: <<>>))
+    assert Macro.quoted_literal?(quote(do: <<1, "foo", "bar"::utf16>>))
+    assert Macro.quoted_literal?(quote(do: <<1000::size(8)-unit(4)>>))
+    assert Macro.quoted_literal?(quote(do: <<1000::8*4>>))
+    assert Macro.quoted_literal?(quote(do: <<102::unsigned-big-integer-size(8)>>))
     refute Macro.quoted_literal?(quote(do: {"foo", var}))
+    refute Macro.quoted_literal?(quote(do: <<"foo"::size(name_size)>>))
+    refute Macro.quoted_literal?(quote(do: <<"foo"::binary-size(name_size)>>))
+    refute Macro.quoted_literal?(quote(do: <<"foo"::custom_modifier()>>))
+    refute Macro.quoted_literal?(quote(do: <<102, rest::binary>>))
   end
 
   test "underscore/1" do

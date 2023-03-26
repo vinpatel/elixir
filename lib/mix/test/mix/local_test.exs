@@ -70,9 +70,9 @@ defmodule Mix.LocalTest do
   _ = @private_key
 
   setup_all do
-    File.mkdir_p!(Mix.PublicKey.public_keys_path())
+    File.mkdir_p!(Mix.Local.public_keys_path())
 
-    Mix.PublicKey.public_keys_path()
+    Mix.Local.public_keys_path()
     |> Path.join("test_key.pub")
     |> File.write!(@public_key)
   end
@@ -100,7 +100,7 @@ defmodule Mix.LocalTest do
       assert {"1.0.0", "1.2.3", "DEF"} =
                Mix.Local.find_matching_versions_from_signed_csv!("name", "1.2.3", "csv")
 
-      assert_raise Mix.Error, "Could not find a matching version of name", fn ->
+      assert_raise Mix.Error, "Could not find a version of name matching: 1.3.0", fn ->
         Mix.Local.find_matching_versions_from_signed_csv!("name", "1.3.0", "csv")
       end
     end)

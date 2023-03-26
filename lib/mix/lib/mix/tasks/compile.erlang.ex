@@ -18,8 +18,7 @@ defmodule Mix.Tasks.Compile.Erlang do
 
     * `--force` - forces compilation regardless of modification times
 
-    * `--all-warnings` - prints warnings even from files that do not need to be
-      recompiled
+    * `--no-all-warnings` - prints only warnings from files currently compiled (instead of all)
 
   ## Configuration
 
@@ -88,13 +87,13 @@ defmodule Mix.Tasks.Compile.Erlang do
       :code.purge(module)
       :code.delete(module)
 
-      file = Erlang.to_erl_file(Path.rootname(input, ".erl"))
+      path = Path.rootname(input, ".erl")
+      file = Erlang.to_erl_file(path)
 
       case :compile.file(file, erlc_options) do
-        # TODO: Don't handle {:error, :badarg} when we require Erlang/OTP 24
-        error when error == :error or error == {:error, :badarg} ->
+        :error ->
           message =
-            "Compiling Erlang file #{inspect(file)} failed, probably because of invalid :erlc_options"
+            "Compiling Erlang file #{inspect(path)} failed, probably because of invalid :erlc_options"
 
           Mix.raise(message)
 

@@ -165,7 +165,7 @@ defmodule Registry do
   the value from the registry and sending it a message. Many parts of the standard
   library are designed to cope with that, such as `Process.monitor/1` which will
   deliver the `:DOWN` message immediately if the monitored process is already dead
-  and `Kernel.send/2` which acts as a no-op for dead processes.
+  and `send/2` which acts as a no-op for dead processes.
 
   ## ETS
 
@@ -217,6 +217,16 @@ defmodule Registry do
           | {:listeners, [atom]}
           | {:meta, [{meta_key, meta_value}]}
 
+  @typedoc """
+  The message that the registry sends to listeners when a process registers or unregisters.
+
+  See the `:listeners` option in `start_link/1`.
+  """
+  @typedoc since: "1.15.0"
+  @type listener_message ::
+          {:register, registry, key, registry_partition :: pid, value}
+          | {:unregister, registry, key, registry_partition :: pid}
+
   ## Via callbacks
 
   @doc false
@@ -258,6 +268,10 @@ defmodule Registry do
       [{pid, _}] -> Kernel.send(pid, msg)
       [] -> :erlang.error(:badarg, [{registry, key}, msg])
     end
+  end
+
+  def send({registry, key, _value}, msg) do
+    Registry.send({registry, key}, msg)
   end
 
   @doc false
@@ -305,10 +319,10 @@ defmodule Registry do
   The following keys are optional:
 
     * `:partitions` - the number of partitions in the registry. Defaults to `1`.
-    * `:listeners` - a list of named processes which are notified of `:register`
-      and `:unregister` events. The registered process must be monitored by the
+    * `:listeners` - a list of named processes which are notified of register
+      and unregister events. The registered process must be monitored by the
       listener if the listener wants to be notified if the registered process
-      crashes.
+      crashes. Messages sent to listeners are of type `t:listener_message/0`.
     * `:meta` - a keyword list of metadata to be attached to the registry.
 
   """
@@ -797,6 +811,10 @@ defmodule Registry do
   the owner if there are no more keys associated to the current process. See
   also `register/3` to read more about the "owner".
 
+  If the registry has listeners specified via the `:listeners` option in `start_link/1`,
+  those listeners will be notified of the unregistration and will receive a
+  message of type `t:listener_message/0`.
+
   ## Examples
 
   For unique registries:
@@ -957,6 +975,10 @@ defmodule Registry do
 
   If the registry has duplicate keys, multiple registrations from the
   current process under the same key are allowed.
+
+  If the registry has listeners specified via the `:listeners` option in `start_link/1`,
+  those listeners will be notified of the registration and will receive a
+  message of type `t:listener_message/0`.
 
   ## Examples
 
@@ -1274,7 +1296,7 @@ defmodule Registry do
 
   ## Examples
 
-  This example shows how to get everything from the registry.
+  This example shows how to get everything from the registry:
 
       iex> Registry.start_link(keys: :unique, name: Registry.SelectAllTest)
       iex> {:ok, _} = Registry.register(Registry.SelectAllTest, "hello", :value)
@@ -1282,7 +1304,7 @@ defmodule Registry do
       iex> Registry.select(Registry.SelectAllTest, [{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2", :"$3"}}]}])
       [{"world", self(), :value}, {"hello", self(), :value}]
 
-  Get all keys in the registry.
+  Get all keys in the registry:
 
       iex> Registry.start_link(keys: :unique, name: Registry.SelectAllTest)
       iex> {:ok, _} = Registry.register(Registry.SelectAllTest, "hello", :value)

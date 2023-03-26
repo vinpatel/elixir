@@ -4,11 +4,7 @@ defmodule Mix.Tasks.Compile.ErlangTest do
   use MixTest.Case
   import ExUnit.CaptureIO
 
-  if System.otp_release() >= "24" do
-    defmacro position(line, column), do: {line, column}
-  else
-    defmacro position(line, _column), do: line
-  end
+  defmacro position(line, column), do: {line, column}
 
   setup config do
     erlc_options = Map.get(config, :erlc_options, [])
@@ -17,10 +13,10 @@ defmodule Mix.Tasks.Compile.ErlangTest do
     :ok
   end
 
-  @tag erlc_options: [{:d, 'foo', 'bar'}]
+  @tag erlc_options: [{:d, ~c"foo", ~c"bar"}]
   test "raises on invalid erlc_options" do
     in_fixture("compile_erlang", fn ->
-      assert_raise Mix.Error, ~r"Compiling Erlang file '.*' failed", fn ->
+      assert_raise Mix.Error, ~r/Compiling Erlang file ".*" failed/, fn ->
         capture_io(fn ->
           Mix.Tasks.Compile.Erlang.run([])
         end)
@@ -158,12 +154,13 @@ defmodule Mix.Tasks.Compile.ErlangTest do
 
       capture_io(fn -> Mix.Tasks.Compile.Erlang.run([]) end)
 
-      output =
-        capture_io(fn ->
-          assert {:noop, _} = Mix.Tasks.Compile.Erlang.run(["--all-warnings"])
-        end)
+      assert capture_io(fn ->
+               assert {:noop, _} = Mix.Tasks.Compile.Erlang.run([])
+             end) =~ ~r"src/has_warning.erl:2:(1:)? warning: function my_fn/0 is unused\n"
 
-      assert output =~ ~r"src/has_warning.erl:2:(1:)? warning: function my_fn/0 is unused\n"
+      assert capture_io(fn ->
+               assert {:noop, _} = Mix.Tasks.Compile.Erlang.run([])
+             end) =~ ~r"src/has_warning.erl:2:(1:)? warning: function my_fn/0 is unused\n"
 
       # Should not print old warnings after fixing
       File.write!(file, """

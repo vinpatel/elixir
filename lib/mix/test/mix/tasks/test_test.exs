@@ -177,9 +177,7 @@ defmodule Mix.Tasks.TestTest do
                    Threshold:  90.00%
                """
 
-        unless windows?() do
-          assert code == 3
-        end
+        assert code == 3
       end)
     end
 
@@ -261,6 +259,7 @@ defmodule Mix.Tasks.TestTest do
       end)
     end
 
+    @tag :unix
     test "does not exit on compilation failure" do
       in_fixture("test_stale", fn ->
         File.write!("lib/b.ex", """
@@ -295,7 +294,7 @@ defmodule Mix.Tasks.TestTest do
 
         Port.command(port, "\n")
 
-        message = "undefined function error_not_a_var"
+        message = "undefined variable \"error_not_a_var\""
         assert receive_until_match(port, message, "") =~ "test/b_test_stale.exs"
 
         File.write!("test/b_test_stale.exs", """
@@ -392,13 +391,30 @@ defmodule Mix.Tasks.TestTest do
         )
       end)
     end
+
+    test "runs after_suite with partitions with no tests" do
+      in_fixture("test_stale", fn ->
+        File.write!("test/test_helper.exs", """
+        ExUnit.after_suite(fn _stats -> IO.puts("AFTER SUITE") end)
+        ExUnit.start()
+        """)
+
+        assert mix(["test", "--partitions", "3"], [{"MIX_TEST_PARTITION", "3"}]) =~ """
+               AFTER SUITE
+               There are no tests to run
+               """
+      end)
+    end
   end
 
   describe "logs and errors" do
     test "logs test absence for a project with no test paths" do
       in_fixture("test_stale", fn ->
         File.rm_rf!("test")
+        assert_run_output("There are no tests to run")
 
+        File.mkdir_p!("test")
+        File.write!("test/test_helper.exs", "ExUnit.start()")
         assert_run_output("There are no tests to run")
       end)
     end
@@ -433,14 +449,39 @@ defmodule Mix.Tasks.TestTest do
       in_fixture("umbrella_test", fn ->
         # Run false positive test first so at least the code is compiled
         # and we can perform more aggressive assertions later
-        assert mix(["test", "apps/unknown_app/test"]) =~ """
+        output = mix(["test", "apps/unknown_app/test"])
+
+        assert output =~ """
                ==> bar
                Paths given to "mix test" did not match any directory/file: apps/unknown_app/test
+               """
+
+        assert output =~ """
                ==> foo
                Paths given to "mix test" did not match any directory/file: apps/unknown_app/test
                """
 
         output = mix(["test", "apps/bar/test/bar_tests.exs"])
+
+        assert output =~ """
+               ==> bar
+               ....
+               """
+
+        refute output =~ "==> foo"
+        refute output =~ "Paths given to \"mix test\" did not match any directory/file"
+
+        output = mix(["test", "./apps/bar/test/bar_tests.exs"])
+
+        assert output =~ """
+               ==> bar
+               ....
+               """
+
+        refute output =~ "==> foo"
+        refute output =~ "Paths given to \"mix test\" did not match any directory/file"
+
+        output = mix(["test", Path.expand("apps/bar/test/bar_tests.exs")])
 
         assert output =~ """
                ==> bar
@@ -517,8 +558,6 @@ defmodule Mix.Tasks.TestTest do
   end
 
   describe "--exit-status" do
-    @describetag :unix
-
     test "returns custom exit status" do
       in_fixture("test_failed", fn ->
         {output, exit_status} = mix_code(["test", "--exit-status", "5"])

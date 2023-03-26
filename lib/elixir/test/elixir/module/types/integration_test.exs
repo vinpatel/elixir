@@ -201,6 +201,8 @@ defmodule Module.Types.IntegrationTest do
 
           @file "external_source.ex"
           def c, do: E.no_module()
+
+          def i, do: Io.puts "hello"
         end
         """
       }
@@ -211,6 +213,9 @@ defmodule Module.Types.IntegrationTest do
 
       warning: E.no_module/0 is undefined (module E is not available or is yet to be defined)
         external_source.ex:5: A.c/0
+
+      warning: Io.puts/1 is undefined (module Io is not available or is yet to be defined)
+        a.ex:7: A.i/0
 
       """
 
@@ -241,7 +246,7 @@ defmodule Module.Types.IntegrationTest do
       assert_warnings(files, warning)
     end
 
-    test "doesn't report missing funcs at compile time" do
+    test "doesn't report missing functions at compile time" do
       files = %{
         "a.ex" => """
         Enum.map([], fn _ -> BadReferencer.no_func4() end)
@@ -557,6 +562,61 @@ defmodule Module.Types.IntegrationTest do
     end
   end
 
+  describe "regressions" do
+    test "handle missing location info from quoted" do
+      assert capture_io(:stderr, fn ->
+               quote do
+                 defmodule X do
+                   def f() do
+                     x = %{}
+                     %{x | key: :value}
+                   end
+                 end
+               end
+               |> Code.compile_quoted()
+             end) =~ "warning:"
+    end
+
+    test "do not parse binary segments as variables" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          def decode(byte) do
+            case byte do
+              enc when enc in [<<0x00>>, <<0x01>>] -> :ok
+            end
+          end
+        end
+        """
+      }
+
+      assert_no_warnings(files)
+    end
+  end
+
+  describe "after_verify" do
+    test "reports functions" do
+      files = %{
+        "a.ex" => """
+        defmodule A do
+          @after_verify __MODULE__
+
+          def __after_verify__(__MODULE__) do
+            IO.warn "from after_verify", []
+          end
+        end
+        """
+      }
+
+      warning = """
+      warning: from after_verify
+
+      """
+
+      assert_warnings(files, warning)
+    end
+  end
+
   describe "deprecated" do
     test "reports functions" do
       files = %{
@@ -739,7 +799,7 @@ defmodule Module.Types.IntegrationTest do
   end
 
   defp read_chunk(binary) do
-    assert {:ok, {_module, [{'ExCk', chunk}]}} = :beam_lib.chunks(binary, ['ExCk'])
+    assert {:ok, {_module, [{~c"ExCk", chunk}]}} = :beam_lib.chunks(binary, [~c"ExCk"])
     assert {:elixir_checker_v1, map} = :erlang.binary_to_term(chunk)
     map
   end

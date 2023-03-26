@@ -8,19 +8,19 @@ defmodule Mix.Tasks.Help do
 
   ## Arguments
 
-      mix help                  - prints all aliases, tasks and their short descriptions
-      mix help ALIAS            - prints the definition for the given alias
-      mix help TASK             - prints full docs for the given task
-      mix help --search PATTERN - prints all tasks and aliases that contain PATTERN in the name
-      mix help --names          - prints all task names and aliases
+      $ mix help                  - prints all aliases, tasks and their short descriptions
+      $ mix help ALIAS            - prints the definition for the given alias
+      $ mix help TASK             - prints full docs for the given task
+      $ mix help --search PATTERN - prints all tasks and aliases that contain PATTERN in the name
+      $ mix help --names          - prints all task names and aliases
                                   (useful for autocompleting)
 
   ## Colors
 
   When possible, `mix help` is going to use coloring for formatting
-  guides. The formatting can be customized by configuring the Mix
-  application either inside your project (in `config/config.exs`) or
-  by using the local config (in `~/.mix/config.exs`).
+  the help information. The formatting can be customized by configuring
+  the Mix application either inside your project (in `config/config.exs`)
+  or by using the local config (in `~/.mix/config.exs`).
 
   For example, to disable color, one may use the configuration:
 
@@ -140,7 +140,7 @@ defmodule Mix.Tasks.Help do
   end
 
   defp where_is_file(module) do
-    case :code.where_is_file(Atom.to_charlist(module) ++ '.beam') do
+    case :code.where_is_file(Atom.to_charlist(module) ++ ~c".beam") do
       :non_existing ->
         "not available"
 
@@ -153,7 +153,16 @@ defmodule Mix.Tasks.Help do
   end
 
   defp display_default_task_doc(max) do
-    message = "Runs the default task (current: \"mix #{Mix.Project.config()[:default_task]}\")"
+    project = Mix.Project.get()
+
+    default =
+      if function_exported?(project, :cli, 0) do
+        project.cli()[:default_task] || "run"
+      else
+        "run"
+      end
+
+    message = "Runs the default task (current: \"mix #{default}\")"
     Mix.shell().info(format_task("mix", max, message))
   end
 

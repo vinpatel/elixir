@@ -7,12 +7,16 @@ Application.put_env(:logger, :backends, [])
 
 os_exclude = if match?({:win32, _}, :os.type()), do: [unix: true], else: [windows: true]
 epmd_exclude = if match?({:win32, _}, :os.type()), do: [epmd: true], else: []
-ExUnit.start(trace: "--trace" in System.argv(), exclude: epmd_exclude ++ os_exclude)
+git_exclude = if Mix.SCM.Git.git_version() <= {1, 7, 4}, do: [git_sparse: true], else: []
 
-unless {1, 7, 4} <= Mix.SCM.Git.git_version() do
-  IO.puts(:stderr, "Skipping tests with git sparse checkouts...")
-  ExUnit.configure(exclude: :git_sparse)
-end
+{line_exclude, line_include} =
+  if line = System.get_env("LINE"), do: {[:test], [line: line]}, else: {[], []}
+
+ExUnit.start(
+  trace: !!System.get_env("TRACE"),
+  exclude: epmd_exclude ++ os_exclude ++ git_exclude ++ line_exclude,
+  include: line_include
+)
 
 # Clear environment variables that may affect tests
 System.delete_env("http_proxy")
@@ -200,6 +204,12 @@ defmodule MixTest.Case do
     tmp = tmp_path() |> String.to_charlist()
     for path <- :code.get_path(), :string.str(path, tmp) != 0, do: :code.del_path(path)
   end
+
+  def get_git_repo_revs(repo) do
+    File.cd!(fixture_path(repo), fn ->
+      Regex.split(~r/\r?\n/, System.cmd("git", ["log", "--format=%H"]) |> elem(0), trim: true)
+    end)
+  end
 end
 
 ## Set up globals
@@ -215,10 +225,11 @@ System.put_env("MIX_HOME", mix)
 System.delete_env("XDG_DATA_HOME")
 System.delete_env("XDG_CONFIG_HOME")
 
-rebar = System.get_env("REBAR") || Path.expand("fixtures/rebar", __DIR__)
-File.cp!(rebar, Path.join(mix, "rebar"))
-rebar = System.get_env("REBAR3") || Path.expand("fixtures/rebar3", __DIR__)
-File.cp!(rebar, Path.join(mix, "rebar3"))
+rebar3_source = System.get_env("REBAR3") || Path.expand("fixtures/rebar3", __DIR__)
+[major, minor | _] = String.split(System.version(), ".")
+rebar3_target = Path.join([mix, "elixir", "#{major}-#{minor}", "rebar3"])
+File.mkdir_p!(Path.dirname(rebar3_target))
+File.cp!(rebar3_source, rebar3_target)
 
 ## Copy fixtures to tmp
 
@@ -411,6 +422,26 @@ end
 Enum.each([:invalidapp, :invalidvsn, :noappfile, :nosemver, :ok], fn dep ->
   File.mkdir_p!(Path.expand("fixtures/deps_status/deps/#{dep}/.git", __DIR__))
 end)
+
+# Archive ebin
+target = Path.expand("fixtures/archive", __DIR__)
+
+unless File.dir?(Path.join(target, "ebin")) do
+  File.mkdir_p!(Path.join(target, "ebin"))
+
+  File.write!(Path.join([target, "ebin", "local_sample.app"]), """
+  {application,local_sample,
+    [
+      {modules,['Elixir.Mix.Tasks.Local.Sample']},
+      {applications,[kernel,stdlib,elixir]}
+    ]
+  }.
+  """)
+
+  [{name, bin}] = Code.compile_file("lib/local.sample.ex", target)
+
+  File.write!(Path.join([target, "ebin", Atom.to_string(name) <> ".beam"]), bin)
+end
 
 ## Generate helper modules
 

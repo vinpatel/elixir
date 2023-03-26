@@ -2,7 +2,7 @@ defmodule GenEvent do
   # Functions from this module are deprecated in elixir_dispatch.
 
   @moduledoc """
-  A event manager with event handlers behaviour.
+  An event manager with event handlers behaviour.
 
   If you are interested in implementing an event manager, please read the
   "Alternatives" section below. If you have to implement an event handler to
@@ -91,7 +91,7 @@ defmodule GenEvent do
     deprecation_message =
       "the GenEvent module is deprecated, see its documentation for alternatives"
 
-    IO.warn(deprecation_message, Macro.Env.stacktrace(__CALLER__))
+    IO.warn(deprecation_message, __CALLER__)
 
     quote location: :keep do
       @behaviour :gen_event
@@ -510,7 +510,7 @@ defmodule GenEvent do
   @doc false
   def format_status(opt, status_data) do
     [pdict, sys_state, parent, _debug, [name, handlers, _hib]] = status_data
-    header = :gen.format_status_header('Status for event handler', name)
+    header = :gen.format_status_header(~c"Status for event handler", name)
 
     formatted =
       for handler <- handlers do
@@ -530,8 +530,8 @@ defmodule GenEvent do
 
     [
       header: header,
-      data: [{'Status', sys_state}, {'Parent', parent}],
-      items: {'Installed handlers', formatted}
+      data: [{~c"Status", sys_state}, {~c"Parent", parent}],
+      items: {~c"Installed handlers", formatted}
     ]
   end
 
@@ -882,9 +882,9 @@ defmodule GenEvent do
     formatted = report_status(handler, state)
 
     :error_logger.error_msg(
-      '** gen_event handler ~p crashed.~n' ++
-        '** Was installed in ~p~n' ++
-        '** Last event was: ~p~n' ++ '** When handler state == ~p~n' ++ '** Reason == ~p~n',
+      ~c"** gen_event handler ~p crashed.~n" ++
+        ~c"** Was installed in ~p~n" ++
+        ~c"** Last event was: ~p~n" ++ ~c"** When handler state == ~p~n" ++ ~c"** Reason == ~p~n",
       [handler(handler, :id), name, last_in, formatted, reason]
     )
   end

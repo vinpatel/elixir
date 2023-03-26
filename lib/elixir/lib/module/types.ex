@@ -26,13 +26,15 @@ defmodule Module.Types do
 
             error =
               Error.exception("""
-              found error while checking types for #{Exception.format_mfa(module, fun, arity)}
+              found error while checking types for #{Exception.format_mfa(module, fun, arity)}:
+
+              #{Exception.format_banner(:error, e, __STACKTRACE__)}\
+
+              The exception happened while checking this code:
 
               #{Macro.to_string(def_expr)}
 
-              Please report this bug: https://github.com/elixir-lang/elixir/issues
-
-              #{Exception.format_banner(:error, e, __STACKTRACE__)}\
+              In case it is a bug, please report it at: https://github.com/elixir-lang/elixir/issues
               """)
 
             reraise error, __STACKTRACE__
@@ -135,8 +137,7 @@ defmodule Module.Types do
   # Collect relevant information from context and traces to report error
   def error_to_warning(:unable_apply, {mfa, args, expected, signature, stack}, context) do
     {fun, arity} = context.function
-    line = get_meta(stack.last_expr)[:line]
-    location = {context.file, line, {context.module, fun, arity}}
+    location = {context.file, get_line(stack), {context.module, fun, arity}}
 
     traces = type_traces(stack, context)
     {[signature | args], traces} = lift_all_types([signature | args], traces, context)
@@ -146,14 +147,15 @@ defmodule Module.Types do
 
   def error_to_warning(:unable_unify, {left, right, stack}, context) do
     {fun, arity} = context.function
-    line = get_meta(stack.last_expr)[:line]
-    location = {context.file, line, {context.module, fun, arity}}
+    location = {context.file, get_line(stack), {context.module, fun, arity}}
 
     traces = type_traces(stack, context)
     {[left, right], traces} = lift_all_types([left, right], traces, context)
     error = {:unable_unify, left, right, {location, stack.last_expr, traces}}
     {Module.Types, error, location}
   end
+
+  defp get_line(stack), do: stack.last_expr |> get_meta() |> Keyword.get(:line, 0)
 
   # Collect relevant traces from context.traces using stack.unify_stack
   defp type_traces(stack, context) do
@@ -211,17 +213,21 @@ defmodule Module.Types do
   ## FORMAT WARNINGS
 
   def format_warning({:unable_apply, mfa, args, expected, signature, {location, expr, traces}}) do
-    {module, function, arity} = mfa
-    mfa_args = Macro.generate_arguments(arity, __MODULE__)
-    {module, function, ^arity} = call_to_mfa(erl_to_ex(module, function, mfa_args, []))
+    {original_module, original_function, arity} = mfa
+    {_, _, args} = mfa_or_fa = erl_to_ex(original_module, original_function, args, [])
+    {module, function, ^arity} = call_to_mfa(mfa_or_fa)
     format_mfa = Exception.format_mfa(module, function, arity)
     {traces, [] = _hints} = format_traces(traces, [], false)
 
     clauses =
-      Enum.map(
-        signature,
-        &String.slice(IO.iodata_to_binary(Unify.format_type({:fun, [&1]}, false)), 1..-2)
-      )
+      Enum.map(signature, fn {ins, out} ->
+        {_, _, ins} = erl_to_ex(original_module, original_function, ins, [])
+
+        {:fun, [{ins, out}]}
+        |> Unify.format_type(false)
+        |> IO.iodata_to_binary()
+        |> binary_slice(1..-2//1)
+      end)
 
     [
       "expected #{format_mfa} to have signature:\n\n    ",
@@ -248,7 +254,7 @@ defmodule Module.Types do
         "undefined field \"#{atom}\" ",
         format_expr(expr, location),
         "expected one of the following fields: ",
-        Enum.map_join(Enum.sort(known_atoms), ", ", & &1),
+        Enum.join(Enum.sort(known_atoms), ", "),
         "\n\n",
         traces,
         format_message_hints(hints),

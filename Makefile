@@ -4,11 +4,12 @@ SHARE_PREFIX ?= $(PREFIX)/share
 MAN_PREFIX ?= $(SHARE_PREFIX)/man
 #CANONICAL := MAJOR.MINOR/
 CANONICAL ?= main/
+DOCS_FORMAT ?= html
 ELIXIRC := bin/elixirc --ignore-module-conflict $(ELIXIRC_OPTS)
 ERLC := erlc -I lib/elixir/include
 ERL_MAKE := if [ -n "$(ERLC_OPTS)" ]; then ERL_COMPILER_OPTIONS=$(ERLC_OPTS) erl -make; else erl -make; fi
 ERL := erl -I lib/elixir/include -noshell -pa lib/elixir/ebin
-GENERATE_APP := $(CURDIR)/lib/elixir/generate_app.escript
+GENERATE_APP := $(CURDIR)/lib/elixir/scripts/generate_app.escript
 VERSION := $(strip $(shell cat VERSION))
 Q := @
 LIBDIR := lib
@@ -23,14 +24,14 @@ SOURCE_DATE_EPOCH_PATH = lib/elixir/tmp/ebin_reproducible
 SOURCE_DATE_EPOCH_FILE = $(SOURCE_DATE_EPOCH_PATH)/SOURCE_DATE_EPOCH
 
 .PHONY: install compile erlang elixir unicode app build_plt clean_plt dialyze test check_reproducible clean clean_residual_files format install_man clean_man docs Docs.zip Precompiled.zip zips
-.NOTPARALLEL: compile
+.NOTPARALLEL:
 
 #==> Functions
 
 define CHECK_ERLANG_RELEASE
-	erl -noshell -eval '{V,_} = string:to_integer(erlang:system_info(otp_release)), io:fwrite("~s", [is_integer(V) and (V >= 23)])' -s erlang halt | grep -q '^true'; \
+	erl -noshell -eval '{V,_} = string:to_integer(erlang:system_info(otp_release)), io:fwrite("~s", [is_integer(V) and (V >= 24)])' -s erlang halt | grep -q '^true'; \
 		if [ $$? != 0 ]; then \
-		  echo "At least Erlang/OTP 23.0 is required to build Elixir"; \
+		  echo "At least Erlang/OTP 24.0 is required to build Elixir"; \
 		  exit 1; \
 		fi
 endef
@@ -92,10 +93,10 @@ $(KERNEL): lib/elixir/lib/*.ex lib/elixir/lib/*/*.ex lib/elixir/lib/*/*/*.ex
 		echo "==> bootstrap (compile)"; \
 		$(ERL) -s elixir_compiler bootstrap -s erlang halt; \
 	fi
-	$(Q) $(MAKE) unicode
+	$(Q) "$(MAKE)" unicode
 	@ echo "==> elixir (compile)";
 	$(Q) cd lib/elixir && ../../$(ELIXIRC) "lib/**/*.ex" -o ebin;
-	$(Q) $(MAKE) app
+	$(Q) "$(MAKE)" app
 
 app: $(APP)
 $(APP): lib/elixir/src/elixir.app.src lib/elixir/ebin VERSION $(GENERATE_APP)
@@ -127,7 +128,7 @@ install: compile
 	$(Q) for file in "$(DESTDIR)$(PREFIX)"/$(LIBDIR)/elixir/bin/*; do \
 		ln -sf "../$(LIBDIR)/elixir/bin/$${file##*/}" "$(DESTDIR)$(PREFIX)/$(BINDIR)/"; \
 	done
-	$(MAKE) install_man
+	"$(MAKE)" install_man
 
 check_reproducible: compile
 	$(Q) echo "==> Checking for reproducible builds..."
@@ -145,21 +146,21 @@ check_reproducible: compile
 	$(Q) mv lib/iex/ebin/* lib/iex/tmp/ebin_reproducible/
 	$(Q) mv lib/logger/ebin/* lib/logger/tmp/ebin_reproducible/
 	$(Q) mv lib/mix/ebin/* lib/mix/tmp/ebin_reproducible/
-	SOURCE_DATE_EPOCH=$(call READ_SOURCE_DATE_EPOCH) $(MAKE) compile
+	SOURCE_DATE_EPOCH=$(call READ_SOURCE_DATE_EPOCH) "$(MAKE)" compile
 	$(Q) echo "Diffing..."
-	$(Q) bin/elixir lib/elixir/diff.exs lib/elixir/ebin/ lib/elixir/tmp/ebin_reproducible/
-	$(Q) bin/elixir lib/elixir/diff.exs lib/eex/ebin/ lib/eex/tmp/ebin_reproducible/
-	$(Q) bin/elixir lib/elixir/diff.exs lib/ex_unit/ebin/ lib/ex_unit/tmp/ebin_reproducible/
-	$(Q) bin/elixir lib/elixir/diff.exs lib/iex/ebin/ lib/iex/tmp/ebin_reproducible/
-	$(Q) bin/elixir lib/elixir/diff.exs lib/logger/ebin/ lib/logger/tmp/ebin_reproducible/
-	$(Q) bin/elixir lib/elixir/diff.exs lib/mix/ebin/ lib/mix/tmp/ebin_reproducible/
+	$(Q) bin/elixir lib/elixir/scripts/diff.exs lib/elixir/ebin/ lib/elixir/tmp/ebin_reproducible/
+	$(Q) bin/elixir lib/elixir/scripts/diff.exs lib/eex/ebin/ lib/eex/tmp/ebin_reproducible/
+	$(Q) bin/elixir lib/elixir/scripts/diff.exs lib/ex_unit/ebin/ lib/ex_unit/tmp/ebin_reproducible/
+	$(Q) bin/elixir lib/elixir/scripts/diff.exs lib/iex/ebin/ lib/iex/tmp/ebin_reproducible/
+	$(Q) bin/elixir lib/elixir/scripts/diff.exs lib/logger/ebin/ lib/logger/tmp/ebin_reproducible/
+	$(Q) bin/elixir lib/elixir/scripts/diff.exs lib/mix/ebin/ lib/mix/tmp/ebin_reproducible/
 	$(Q) echo "Builds are reproducible"
 
 clean:
 	rm -rf ebin
 	rm -rf lib/*/ebin
 	rm -rf $(PARSER)
-	$(Q) $(MAKE) clean_residual_files
+	$(Q) "$(MAKE)" clean_residual_files
 
 clean_elixir:
 	$(Q) rm -f lib/*/ebin/Elixir.*.beam
@@ -172,47 +173,54 @@ clean_residual_files:
 	rm -rf lib/mix/test/fixtures/git_rebar/
 	rm -rf lib/mix/test/fixtures/git_repo/
 	rm -rf lib/mix/test/fixtures/git_sparse_repo/
+	rm -rf lib/mix/test/fixtures/archive/ebin/
 	rm -f erl_crash.dump
-	$(Q) $(MAKE) clean_man
+	$(Q) "$(MAKE)" clean_man
 
 #==> Documentation tasks
 
 LOGO_PATH = $(shell test -f ../docs/logo.png && echo "--logo ../docs/logo.png")
 SOURCE_REF = $(shell tag="$(call GIT_TAG)" revision="$(call GIT_REVISION)"; echo "$${tag:-$$revision}")
-DOCS_FORMAT = html
-COMPILE_DOCS = CANONICAL=$(CANONICAL) bin/elixir ../ex_doc/bin/ex_doc "$(1)" "$(VERSION)" "lib/$(2)/ebin" --main "$(3)" --source-url "https://github.com/elixir-lang/elixir" --source-ref "$(call SOURCE_REF)" $(call LOGO_PATH) --output doc/$(2) --canonical "https://hexdocs.pm/$(2)/$(CANONICAL)" --homepage-url "https://elixir-lang.org/docs.html" --formatter "$(DOCS_FORMAT)" $(4)
+DOCS_COMPILE = CANONICAL=$(CANONICAL) bin/elixir ../ex_doc/bin/ex_doc "$(1)" "$(VERSION)" "lib/$(2)/ebin" --main "$(3)" --source-url "https://github.com/elixir-lang/elixir" --source-ref "$(call SOURCE_REF)" $(call LOGO_PATH) --output doc/$(2) --canonical "https://hexdocs.pm/$(2)/$(CANONICAL)" --homepage-url "https://elixir-lang.org/docs.html" --formatter "$(DOCS_FORMAT)" $(4)
+DOCS_CONFIG = bin/elixir lib/elixir/scripts/docs_config.exs "$(1)"
 
 docs: compile ../ex_doc/bin/ex_doc docs_elixir docs_eex docs_mix docs_iex docs_ex_unit docs_logger
 
 docs_elixir: compile ../ex_doc/bin/ex_doc
 	@ echo "==> ex_doc (elixir)"
 	$(Q) rm -rf doc/elixir
-	$(call COMPILE_DOCS,Elixir,elixir,Kernel,--config "lib/elixir/docs.exs")
+	$(call DOCS_COMPILE,Elixir,elixir,Kernel,--config "lib/elixir/scripts/elixir_docs.exs")
+	$(call DOCS_CONFIG,elixir)
 
 docs_eex: compile ../ex_doc/bin/ex_doc
 	@ echo "==> ex_doc (eex)"
 	$(Q) rm -rf doc/eex
-	$(call COMPILE_DOCS,EEx,eex,EEx,--config "lib/mix/docs.exs")
+	$(call DOCS_COMPILE,EEx,eex,EEx,--config "lib/elixir/scripts/mix_docs.exs")
+	$(call DOCS_CONFIG,eex)
 
 docs_mix: compile ../ex_doc/bin/ex_doc
 	@ echo "==> ex_doc (mix)"
 	$(Q) rm -rf doc/mix
-	$(call COMPILE_DOCS,Mix,mix,Mix,--config "lib/mix/docs.exs")
+	$(call DOCS_COMPILE,Mix,mix,Mix,--config "lib/elixir/scripts/mix_docs.exs")
+	$(call DOCS_CONFIG,mix)
 
 docs_iex: compile ../ex_doc/bin/ex_doc
 	@ echo "==> ex_doc (iex)"
 	$(Q) rm -rf doc/iex
-	$(call COMPILE_DOCS,IEx,iex,IEx,--config "lib/mix/docs.exs")
+	$(call DOCS_COMPILE,IEx,iex,IEx,--config "lib/elixir/scripts/mix_docs.exs")
+	$(call DOCS_CONFIG,iex)
 
 docs_ex_unit: compile ../ex_doc/bin/ex_doc
 	@ echo "==> ex_doc (ex_unit)"
 	$(Q) rm -rf doc/ex_unit
-	$(call COMPILE_DOCS,ExUnit,ex_unit,ExUnit,--config "lib/mix/docs.exs")
+	$(call DOCS_COMPILE,ExUnit,ex_unit,ExUnit,--config "lib/elixir/scripts/mix_docs.exs")
+	$(call DOCS_CONFIG,ex_unit)
 
 docs_logger: compile ../ex_doc/bin/ex_doc
 	@ echo "==> ex_doc (logger)"
 	$(Q) rm -rf doc/logger
-	$(call COMPILE_DOCS,Logger,logger,Logger,--config "lib/mix/docs.exs")
+	$(call DOCS_COMPILE,Logger,logger,Logger,--config "lib/elixir/scripts/mix_docs.exs")
+	$(call DOCS_CONFIG,logger)
 
 ../ex_doc/bin/ex_doc:
 	@ echo "ex_doc is not found in ../ex_doc as expected. See README for more information."
@@ -232,7 +240,6 @@ Precompiled.zip: build_man compile
 
 #==> Test tasks
 
-# If you modify this task, please update .cirrus.yml accordingly
 test: test_formatted test_erlang test_elixir
 
 test_windows: test test_taskkill
@@ -325,4 +332,4 @@ install_man: build_man
 	$(Q) $(INSTALL_DATA) man/elixirc.1 $(DESTDIR)$(MAN_PREFIX)/man1
 	$(Q) $(INSTALL_DATA) man/iex.1     $(DESTDIR)$(MAN_PREFIX)/man1
 	$(Q) $(INSTALL_DATA) man/mix.1     $(DESTDIR)$(MAN_PREFIX)/man1
-	$(MAKE) clean_man
+	"$(MAKE)" clean_man

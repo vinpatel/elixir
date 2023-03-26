@@ -74,13 +74,9 @@ defmodule ExUnit.CaptureIO do
 
   ## Examples
 
+  To capture the standard io:
+
       iex> capture_io(fn -> IO.write("john") end) == "john"
-      true
-
-      iex> capture_io(:stderr, fn -> IO.write(:stderr, "john") end) == "john"
-      true
-
-      iex> capture_io(:standard_error, fn -> IO.write(:stderr, "john") end) == "john"
       true
 
       iex> capture_io("this is input", fn ->
@@ -95,13 +91,32 @@ defmodule ExUnit.CaptureIO do
       ...> end) == "this is input"
       true
 
+  Note it is fine to use `==` with standard IO, because the content is captured
+  per test process. However, `:stderr` is shared across all tests, so you will
+  want to use `=~` instead of `==` for assertions on `:stderr` if your tests
+  are async:
+
+      iex> capture_io(:stderr, fn -> IO.write(:stderr, "john") end) =~ "john"
+      true
+
+      iex> capture_io(:standard_error, fn -> IO.write(:stderr, "john") end) =~ "john"
+      true
+
+  In particular, avoid empty captures on `:stderr` with async tests:
+
+      iex> capture_io(:stderr, fn -> :nothing end) == ""
+      true
+
+  Otherwise, if the standard error of any other test is captured, the test will
+  fail.
+
   ## Returning values
 
   As seen in the examples above, `capture_io` returns the captured output.
   If you want to also capture the result of the function executed,
   use `with_io/2`.
   """
-  @spec capture_io((() -> any())) :: String.t()
+  @spec capture_io((-> any())) :: String.t()
   def capture_io(fun) when is_function(fun, 0) do
     {_result, capture} = with_io(fun)
     capture
@@ -112,7 +127,7 @@ defmodule ExUnit.CaptureIO do
 
   See `capture_io/1` for more information.
   """
-  @spec capture_io(atom() | String.t() | keyword(), (() -> any())) :: String.t()
+  @spec capture_io(atom() | String.t() | keyword(), (-> any())) :: String.t()
   def capture_io(device_input_or_options, fun)
 
   def capture_io(device, fun) when is_atom(device) and is_function(fun, 0) do
@@ -135,7 +150,7 @@ defmodule ExUnit.CaptureIO do
 
   See `capture_io/1` for more information.
   """
-  @spec capture_io(atom(), String.t() | keyword(), (() -> any())) :: String.t()
+  @spec capture_io(atom(), String.t() | keyword(), (-> any())) :: String.t()
   def capture_io(device, input_or_options, fun)
 
   def capture_io(device, input, fun)
@@ -158,7 +173,7 @@ defmodule ExUnit.CaptureIO do
   ## Examples
 
       {result, output} =
-        assert with_io(fn ->
+        with_io(fn ->
           IO.puts("a")
           IO.puts("b")
           2 + 2
@@ -168,7 +183,7 @@ defmodule ExUnit.CaptureIO do
       assert output == "a\nb\n"
   """
   @doc since: "1.13.0"
-  @spec with_io((() -> any())) :: {any(), String.t()}
+  @spec with_io((-> any())) :: {any(), String.t()}
   def with_io(fun) when is_function(fun, 0) do
     with_io(:stdio, [], fun)
   end
@@ -179,7 +194,7 @@ defmodule ExUnit.CaptureIO do
   See `with_io/1` for more information.
   """
   @doc since: "1.13.0"
-  @spec with_io(atom() | String.t() | keyword(), (() -> any())) :: {any(), String.t()}
+  @spec with_io(atom() | String.t() | keyword(), (-> any())) :: {any(), String.t()}
   def with_io(device_input_or_options, fun)
 
   def with_io(device, fun) when is_atom(device) and is_function(fun, 0) do
@@ -200,7 +215,7 @@ defmodule ExUnit.CaptureIO do
   See `with_io/1` for more information.
   """
   @doc since: "1.13.0"
-  @spec with_io(atom(), String.t() | keyword(), (() -> any())) :: {any(), String.t()}
+  @spec with_io(atom(), String.t() | keyword(), (-> any())) :: {any(), String.t()}
   def with_io(device, input_or_options, fun)
 
   def with_io(device, input, fun)

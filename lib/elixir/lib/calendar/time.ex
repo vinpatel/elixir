@@ -4,7 +4,7 @@ defmodule Time do
 
   The Time struct contains the fields hour, minute, second and microseconds.
   New times can be built with the `new/4` function or using the
-  `~T` (see `Kernel.sigil_T/2`) sigil:
+  `~T` (see `sigil_T/2`) sigil:
 
       iex> ~T[23:00:07.001]
       ~T[23:00:07.001]
@@ -454,10 +454,15 @@ defmodule Time do
   end
 
   @doc """
-  Adds the `number` of `unit`s to the given `time`.
+  Adds the `amount_to_add` of `unit`s to the given `time`.
 
-  This function accepts the `number` measured according to `Calendar.ISO`.
-  The time is returned in the same calendar as it was given in.
+  Accepts an `amount_to_add` in any `unit`. `unit` can be
+  `:hour`, `:minute`, `:second` or any subsecond precision from
+  `t:System.time_unit/0`. It defaults to `:second`. Negative values
+  will move backwards in time.
+
+  This function always consider the unit to be computed according
+  to the `Calendar.ISO`.
 
   Note the result value represents the time of day, meaning that it is cyclic,
   for instance, it will never go over 24 hours for the ISO calendar.
@@ -465,30 +470,64 @@ defmodule Time do
   ## Examples
 
       iex> Time.add(~T[10:00:00], 27000)
-      ~T[17:30:00.000000]
+      ~T[17:30:00]
       iex> Time.add(~T[11:00:00.005], 2400)
-      ~T[11:40:00.005000]
-      iex> Time.add(~T[00:00:00], 86_399_999, :millisecond)
-      ~T[23:59:59.999000]
-      iex> Time.add(~T[17:10:05], 86400)
-      ~T[17:10:05.000000]
+      ~T[11:40:00.005]
+      iex> Time.add(~T[00:00:00.000], 86_399_999, :millisecond)
+      ~T[23:59:59.999]
+
+  Negative values are allowed:
+
       iex> Time.add(~T[23:00:00], -60)
-      ~T[22:59:00.000000]
+      ~T[22:59:00]
+
+  Note that the time is cyclic:
+
+      iex> Time.add(~T[17:10:05], 86400)
+      ~T[17:10:05]
+
+  Hours and minutes are also supported:
+
+      iex> Time.add(~T[17:10:05], 2, :hour)
+      ~T[19:10:05]
+      iex> Time.add(~T[17:10:05], 30, :minute)
+      ~T[17:40:05]
+
+  This operation merges the precision of the time with the given unit:
+
+      iex> result = Time.add(~T[00:29:10], 21, :millisecond)
+      ~T[00:29:10.021]
+      iex> result.microsecond
+      {21000, 3}
 
   """
   @doc since: "1.6.0"
-  @spec add(Calendar.time(), integer, System.time_unit()) :: t
-  def add(%{calendar: calendar} = time, number, unit \\ :second) when is_integer(number) do
-    number = System.convert_time_unit(number, unit, :microsecond)
-    total = time_to_microseconds(time) + number
+  @spec add(Calendar.time(), integer, :hour | :minute | System.time_unit()) :: t
+  def add(time, amount_to_add, unit \\ :second)
+
+  def add(time, amount_to_add, :hour) when is_integer(amount_to_add) do
+    add(time, amount_to_add * 3600, :second)
+  end
+
+  def add(time, amount_to_add, :minute) when is_integer(amount_to_add) do
+    add(time, amount_to_add * 60, :second)
+  end
+
+  def add(%{calendar: calendar, microsecond: {_, precision}} = time, amount_to_add, unit)
+      when is_integer(amount_to_add) do
+    amount_to_add = System.convert_time_unit(amount_to_add, unit, :microsecond)
+    total = time_to_microseconds(time) + amount_to_add
     parts = Integer.mod(total, @parts_per_day)
-    {hour, minute, second, microsecond} = calendar.time_from_day_fraction({parts, @parts_per_day})
+    precision = max(Calendar.ISO.time_unit_to_precision(unit), precision)
+
+    {hour, minute, second, {microsecond, _}} =
+      calendar.time_from_day_fraction({parts, @parts_per_day})
 
     %Time{
       hour: hour,
       minute: minute,
       second: second,
-      microsecond: microsecond,
+      microsecond: {microsecond, precision},
       calendar: calendar
     }
   end
@@ -557,6 +596,44 @@ defmodule Time do
       {first, second} when first < second -> :lt
       _ -> :eq
     end
+  end
+
+  @doc """
+  Returns true if the first time is strictly earlier than the second.
+
+  ## Examples
+
+      iex> Time.before?(~T[16:04:16], ~T[16:04:28])
+      true
+      iex> Time.before?(~T[16:04:16], ~T[16:04:16])
+      false
+      iex> Time.before?(~T[16:04:16.01], ~T[16:04:16.001])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec before?(Calendar.time(), Calendar.time()) :: boolean()
+  def before?(time1, time2) do
+    compare(time1, time2) == :lt
+  end
+
+  @doc """
+  Returns true if the first time is strictly later than the second.
+
+  ## Examples
+
+      iex> Time.after?(~T[16:04:28], ~T[16:04:16])
+      true
+      iex> Time.after?(~T[16:04:16], ~T[16:04:16])
+      false
+      iex> Time.after?(~T[16:04:16.001], ~T[16:04:16.01])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec after?(Calendar.time(), Calendar.time()) :: boolean()
+  def after?(time1, time2) do
+    compare(time1, time2) == :gt
   end
 
   @doc """
@@ -655,12 +732,12 @@ defmodule Time do
   additional information about a date or time zone is ignored when calculating
   the difference.
 
-  The answer can be returned in any `unit` available from
-  `t:System.time_unit/0`. If the first time value is earlier than
-  the second, a negative number is returned.
+  The answer can be returned in any `:hour`, `:minute`, `:second` or any
+  subsecond `unit` available from `t:System.time_unit/0`. If the first time
+  value is earlier than the second, a negative number is returned.
 
-  This function returns the difference in seconds where seconds
-  are measured according to `Calendar.ISO`.
+  The unit is measured according to `Calendar.ISO` and defaults to `:second`.
+  Fractional results are not supported and are truncated.
 
   ## Examples
 
@@ -681,10 +758,23 @@ defmodule Time do
       iex> Time.diff(~T[00:29:10], ~T[00:29:12], :microsecond)
       -2_000_000
 
+      iex> Time.diff(~T[02:29:10], ~T[00:29:10], :hour)
+      2
+      iex> Time.diff(~T[02:29:10], ~T[00:29:11], :hour)
+      1
+
   """
   @doc since: "1.5.0"
-  @spec diff(Calendar.time(), Calendar.time(), System.time_unit()) :: integer
+  @spec diff(Calendar.time(), Calendar.time(), :hour | :minute | System.time_unit()) :: integer
   def diff(time1, time2, unit \\ :second)
+
+  def diff(time1, time2, :hour) do
+    diff(time1, time2, :second) |> div(3600)
+  end
+
+  def diff(time1, time2, :minute) do
+    diff(time1, time2, :second) |> div(60)
+  end
 
   def diff(
         %{
@@ -692,14 +782,14 @@ defmodule Time do
           hour: hour1,
           minute: minute1,
           second: second1,
-          microsecond: {microsecond1, @parts_per_day}
+          microsecond: {microsecond1, _}
         },
         %{
           calendar: Calendar.ISO,
           hour: hour2,
           minute: minute2,
           second: second2,
-          microsecond: {microsecond2, @parts_per_day}
+          microsecond: {microsecond2, _}
         },
         unit
       ) do

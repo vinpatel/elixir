@@ -28,7 +28,7 @@ defmodule ExUnit do
   command line. Assuming you named the file `assertion_test.exs`,
   you can run it as:
 
-      elixir assertion_test.exs
+      $ elixir assertion_test.exs
 
   ## Case, Callbacks and Assertions
 
@@ -201,7 +201,7 @@ defmodule ExUnit do
 
       System.at_exit(fn
         0 ->
-          time = ExUnit.Server.modules_loaded()
+          time = ExUnit.Server.modules_loaded(false)
           options = persist_defaults(configuration())
           %{failures: failures} = ExUnit.Runner.run(options, time)
 
@@ -235,6 +235,14 @@ defmodule ExUnit do
 
     * `:colors` - a keyword list of color options to be used by some formatters:
       * `:enabled` - boolean option to enable colors, defaults to `IO.ANSI.enabled?/0`;
+
+      * `:success` - success message (defaults to `:green`)
+      * `:invalid` - invalid test message (defaults to `:yellow`)
+      * `:skipped` - skipped test message (defaults to `:yellow`)
+      * `:failure` - failed test message (defaults to `:red`)
+      * `:error_info` - display of actual error (defaults to `:red`)
+      * `:extra_info` - additional information (defaults to `:cyan`)
+      * `:location_info` - filename and tags (defaults to `[:bright, :black]`)
       * `:diff_insert` - color of the insertions on diffs, defaults to `:green`;
       * `:diff_insert_whitespace` - color of the whitespace insertions on diffs,
         defaults to `IO.ANSI.color_background(2, 0, 0)`;
@@ -243,7 +251,7 @@ defmodule ExUnit do
         defaults to `IO.ANSI.color_background(0, 2, 0)`;
 
     * `:exclude` - specifies which tests are run by skipping tests that match the
-      filter;
+      filter. See the "Filters" section in the documentation for `ExUnit.Case`;
 
     * `:exit_status` - specifies an alternate exit status to use when the test
       suite fails. Defaults to 2;
@@ -258,18 +266,20 @@ defmodule ExUnit do
       match the filter. Keep in mind that all tests are included by default, so unless they are
       excluded first, the `:include` option has no effect. To only run the tests
       that match the `:include` filter, exclude the `:test` tag first (see the
-      documentation for `ExUnit.Case` for more information on tags);
+      documentation for `ExUnit.Case` for more information on tags and filters);
 
     * `:max_cases` - maximum number of tests to run in parallel. Only tests from
       different modules run in parallel. It defaults to `System.schedulers_online * 2`
       to optimize both CPU-bound and IO-bound tests;
 
     * `:max_failures` - the suite stops evaluating tests when this number of test failures
-      is reached. All tests within a module that fail when using the `setup_all/1,2` callbacks
+      is reached. All tests within a module that fail when using the
+      [`setup_all/1,2`](`ExUnit.Callbacks.setup_all/1`) callbacks
       are counted as failures. Defaults to `:infinity`;
 
     * `:only_test_ids` - a list of `{module_name, test_name}` tuples that limits
-      what tests get run;
+      what tests get run. This is typically used by Mix to filter which tests
+      should run;
 
     * `:refute_receive_timeout` - the timeout to be used on `refute_receive`
       calls in milliseconds, defaults to `100`;
@@ -291,20 +301,20 @@ defmodule ExUnit do
     * `:timeout` - sets the timeout for the tests in milliseconds, defaults to `60_000`;
 
     * `:trace` - sets ExUnit into trace mode, this sets `:max_cases` to `1` and
-      prints each test case and test while running. Note that in trace mode test timeouts
-      will be ignored as timeout is set to `:infinity`.
+      prints each test case and test while running. Note that in trace mode test
+      timeouts will be ignored as timeout is set to `:infinity`;
 
     * `:test_location_relative_path` - the test location is the file:line information
       printed by tests as a shortcut to run a given test. When this value is set,
       the value is used as a prefix for the test itself. This is typically used by
-      Mix to properly set-up umbrella projects
+      Mix to properly set-up umbrella projects;
 
   Any arbitrary configuration can also be passed to `configure/1` or `start/1`,
   and these options can then be used in places such as custom formatters. These
   other options will be ignored by ExUnit itself.
   """
   @spec configure(Keyword.t()) :: :ok
-  def configure(options) do
+  def configure(options) when is_list(options) do
     Enum.each(options, fn {k, v} ->
       Application.put_env(:ex_unit, k, v)
     end)
@@ -312,6 +322,8 @@ defmodule ExUnit do
 
   @doc """
   Returns ExUnit configuration.
+
+  For the available configuration options, see `configure/1`.
   """
   @spec configuration() :: Keyword.t()
   def configuration do
@@ -350,12 +362,26 @@ defmodule ExUnit do
   Runs the tests. It is invoked automatically
   if ExUnit is started via `start/1`.
 
+  From Elixir v1.14, it accepts an optional list of modules to run
+  as part of the suite. This is often used to rerun modules already
+  loaded in memory.
+
   Returns a map containing the total number of tests, the number
   of failures, the number of excluded tests and the number of skipped tests.
   """
-  @spec run() :: suite_result()
-  def run do
-    _ = ExUnit.Server.modules_loaded()
+  @spec run([module()]) :: suite_result()
+  def run(additional_modules \\ []) do
+    for module <- additional_modules do
+      module_attributes = module.__info__(:attributes)
+
+      if true in Keyword.get(module_attributes, :ex_unit_async, []) do
+        ExUnit.Server.add_async_module(module)
+      else
+        ExUnit.Server.add_sync_module(module)
+      end
+    end
+
+    _ = ExUnit.Server.modules_loaded(additional_modules != [])
     options = persist_defaults(configuration())
     ExUnit.Runner.run(options, nil)
   end
@@ -369,8 +395,9 @@ defmodule ExUnit do
   @doc since: "1.12.0"
   @spec async_run() :: Task.t()
   def async_run() do
+    options = persist_defaults(configuration())
+
     Task.async(fn ->
-      options = persist_defaults(configuration())
       ExUnit.Runner.run(options, nil)
     end)
   end
@@ -381,7 +408,7 @@ defmodule ExUnit do
   @doc since: "1.12.0"
   @spec await_run(Task.t()) :: suite_result()
   def await_run(task) do
-    ExUnit.Server.modules_loaded()
+    ExUnit.Server.modules_loaded(false)
     Task.await(task, :infinity)
   end
 

@@ -268,6 +268,82 @@ defmodule Mix.Tasks.XrefTest do
       assert_trace("lib/b.ex", files, output)
     end
 
+    test "ignores dependencies from patterns and guards" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          defstruct [:foo, :bar]
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          def pattern(A), do: true
+          def guard(a) when is_struct(a, A), do: true
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      """
+
+      assert_trace("lib/b.ex", files, output)
+    end
+
+    test "shows traces for module callbacks" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          @before_compile :"Elixir.B"
+          @after_compile :"Elixir.B"
+          @after_verify :"Elixir.B"
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          defmacro __before_compile__(_env), do: :ok
+          defmacro __after_compile__(_env, _binary), do: :ok
+          def __after_verify__(_module), do: :ok
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/a.ex:1: call B.__after_compile__/2 (compile)
+      lib/a.ex:1: call B.__after_verify__/1 (compile)
+      lib/a.ex:1: call B.__before_compile__/1 (compile)
+      """
+
+      assert_trace("lib/a.ex", files, output)
+    end
+
+    test "shows module with `@behaviour` calling `behaviour_info/1`" do
+      files = %{
+        "lib/a.ex" => ~S"""
+        defmodule A do
+          @callback fun() :: integer
+        end
+        """,
+        "lib/b.ex" => ~S"""
+        defmodule B do
+          @behaviour :"Elixir.A"
+          def fun, do: 42
+        end
+        """
+      }
+
+      output = """
+      Compiling 2 files (.ex)
+      Generated sample app
+      lib/b.ex:1: call A.behaviour_info/1 (runtime)
+      """
+
+      assert_trace("lib/b.ex", files, output)
+    end
+
     test "filters per label" do
       files = %{
         "lib/a.ex" => ~S"""
@@ -451,9 +527,9 @@ defmodule Mix.Tasks.XrefTest do
     end
 
     @abc_linear_files %{
-      "lib/a.ex" => "defmodule A, do: def a, do: B.b()",
-      "lib/b.ex" => "defmodule B, do: def b, do: C.c()",
-      "lib/c.ex" => "defmodule C, do: def c, do: true"
+      "lib/a.ex" => "defmodule A, do: def(a, do: B.b())",
+      "lib/b.ex" => "defmodule B, do: def(b, do: C.c())",
+      "lib/c.ex" => "defmodule C, do: def(c, do: true)"
     }
 
     test "exclude one from linear case" do
@@ -475,6 +551,12 @@ defmodule Mix.Tasks.XrefTest do
         """,
         files: @abc_linear_files
       )
+    end
+
+    test "invalid exclude" do
+      assert_raise Mix.Error, "Excluded files could not be found: lib/a2.ex, lib/a3.ex", fn ->
+        assert_graph(~w[--exclude lib/a2.ex --exclude lib/a.ex --exclude lib/a3.ex], "")
+      end
     end
 
     test "only nodes" do
@@ -740,11 +822,64 @@ defmodule Mix.Tasks.XrefTest do
       end)
     end
 
+    test "with export to a custom file" do
+      in_fixture("no_mixfile", fn ->
+        File.write!("lib/a.ex", """
+        defmodule A do
+          def fun, do: :ok
+        end
+        """)
+
+        File.write!("lib/b.ex", """
+        defmodule B do
+          defstruct []
+        end
+        """)
+
+        assert Mix.Task.run("xref", ["graph", "--format", "dot", "--output", "custom.dot"]) == :ok
+
+        assert File.read!("custom.dot") === """
+               digraph "xref graph" {
+                 "lib/a.ex"
+                 "lib/b.ex"
+               }
+               """
+      end)
+    end
+
+    test "with export to stdout" do
+      in_fixture("no_mixfile", fn ->
+        File.write!("lib/a.ex", """
+        defmodule A do
+          def fun, do: :ok
+        end
+        """)
+
+        File.write!("lib/b.ex", """
+        defmodule B do
+          defstruct []
+        end
+        """)
+
+        output =
+          capture_io(fn ->
+            assert Mix.Task.run("xref", ["graph", "--format", "dot", "--output", "-"]) == :ok
+          end)
+
+        assert output === """
+               digraph "xref graph" {
+                 "lib/a.ex"
+                 "lib/b.ex"
+               }
+               """
+      end)
+    end
+
     test "with mixed cyclic dependencies" do
       in_fixture("no_mixfile", fn ->
         File.write!("lib/a.ex", """
-        defmodule A.Behaviour do
-          @callback foo :: :foo
+        defmodule A.Using do
+          defmacro __using__(_), do: 42
         end
 
         defmodule A do
@@ -759,7 +894,7 @@ defmodule Mix.Tasks.XrefTest do
         File.write!("lib/b.ex", """
         defmodule B do
           # Let's also test that we track literal atom behaviours
-          @behaviour :"Elixir.A.Behaviour"
+          use :"Elixir.A.Using"
 
           def foo do
             A.foo()
@@ -773,7 +908,7 @@ defmodule Mix.Tasks.XrefTest do
                digraph "xref graph" {
                  "lib/a.ex"
                  "lib/a.ex" -> "lib/b.ex" [label="(compile)"]
-                 "lib/b.ex" -> "lib/a.ex" [label="(export)"]
+                 "lib/b.ex" -> "lib/a.ex" [label="(compile)"]
                  "lib/b.ex"
                }
                """
@@ -834,6 +969,53 @@ defmodule Mix.Tasks.XrefTest do
         Mix.Tasks.Xref.run(["graph", "--no-compile"])
         refute receive_until_no_messages([]) =~ "lib/a.ex"
       end)
+    end
+
+    test "group with multiple unconnected files" do
+      assert_graph(~w[--group lib/a.ex,lib/c.ex,lib/e.ex], """
+      lib/a.ex+
+      |-- lib/b.ex (compile)
+      `-- lib/d.ex (compile)
+      lib/b.ex
+      `-- lib/a.ex+ (compile)
+      lib/d.ex
+      `-- lib/a.ex+
+      """)
+    end
+
+    test "group with directly dependent files and cycle" do
+      assert_graph(["--group", "lib/a.ex,lib/b.ex,"], """
+      lib/a.ex+
+      |-- lib/c.ex
+      `-- lib/e.ex (compile)
+      lib/c.ex
+      `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/e.ex
+      lib/e.ex
+      """)
+    end
+
+    test "multiple groups" do
+      assert_graph(~w[--group lib/a.ex,lib/b.ex --group lib/c.ex,lib/e.ex], """
+      lib/a.ex+
+      `-- lib/c.ex+ (compile)
+      lib/c.ex+
+      `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/c.ex+
+      """)
+    end
+
+    test "group with sink" do
+      assert_graph(~w[--group lib/a.ex,lib/c.ex,lib/e.ex --sink lib/e.ex], """
+      lib/b.ex
+      `-- lib/a.ex+ (compile)
+          |-- lib/b.ex (compile)
+          `-- lib/d.ex (compile)
+      lib/d.ex
+      `-- lib/a.ex+
+      """)
     end
 
     @default_files %{

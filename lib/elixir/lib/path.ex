@@ -120,7 +120,7 @@ defmodule Path do
 
   defp do_absname_join(<<c1, c2, rest::binary>>, relativename, [], :win32)
        when c1 in @slash and c2 in @slash,
-       do: do_absname_join(rest, relativename, '//', :win32)
+       do: do_absname_join(rest, relativename, ~c"//", :win32)
 
   defp do_absname_join(<<?\\, rest::binary>>, relativename, result, :win32),
     do: do_absname_join(<<?/, rest::binary>>, relativename, result, :win32)
@@ -260,7 +260,7 @@ defmodule Path do
     end
   end
 
-  defp unix_pathtype(path) when path in ["/", '/'], do: {:absolute, "."}
+  defp unix_pathtype(path) when path in ["/", ~c"/"], do: {:absolute, "."}
   defp unix_pathtype(<<?/, relative::binary>>), do: {:absolute, relative}
   defp unix_pathtype([?/ | relative]), do: {:absolute, relative}
   defp unix_pathtype([list | rest]) when is_list(list), do: unix_pathtype(list ++ rest)
@@ -297,7 +297,7 @@ defmodule Path do
   defp win32_pathtype(relative), do: {:relative, relative}
 
   @doc """
-  Returns the given `path` relative to the given `from` path.
+  Returns the direct relative path from `path` in relation to `from`.
 
   In other words, this function tries to strip the `from` prefix from `path`.
 
@@ -433,12 +433,8 @@ defmodule Path do
   @doc """
   Returns the extension of the last component of `path`.
 
-  The behaviour of this function changed in Erlang/OTP 24 for filenames
-  starting with a dot and without an extension. For example, for a file
-  named `.gitignore`, `extname/1` now returns an empty string, while it
-  would return `".gitignore"` in previous Erlang/OTP versions. This was
-  done to match the behaviour of `rootname/1`, which would return
-  `".gitignore"` as its name (and therefore it cannot also be an extension).
+  For filenames starting with a dot and without an extension, it returns
+  an empty string.
 
   See `basename/1` and `rootname/1` for related functions to extract
   information from paths.
@@ -449,6 +445,9 @@ defmodule Path do
       ".erl"
 
       iex> Path.extname("~/foo/bar")
+      ""
+
+      iex> Path.extname(".gitignore")
       ""
 
   """
@@ -603,6 +602,10 @@ defmodule Path do
       :file.read_link_info(file)
     end
 
+    def read_file_info(file) do
+      :file.read_file_info(file)
+    end
+
     def list_dir(dir) do
       case :file.list_dir(dir) do
         {:ok, files} -> {:ok, for(file <- files, hd(file) != ?., do: file)}
@@ -642,6 +645,10 @@ defmodule Path do
   Directory separators must always be written as `/`, even on Windows.
   You may call `Path.expand/1` to normalize the path before invoking
   this function.
+
+  A character preceded by \ loses its special meaning.
+  Note that \ must be written as \\ in a string literal.
+  For example, "\\?*" will match any filename starting with ?.
 
   By default, the patterns `*` and `?` do not match files starting
   with a dot `.`. See the `:match_dot` option in the "Options" section

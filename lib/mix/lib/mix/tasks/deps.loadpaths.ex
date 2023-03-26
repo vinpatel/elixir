@@ -16,14 +16,23 @@ defmodule Mix.Tasks.Deps.Loadpaths do
 
     * `--no-compile` - does not compile dependencies
     * `--no-deps-check` - does not check or compile deps, only load available ones
+    * `--no-deps-loading` - does not add deps loadpaths to the code path
     * `--no-elixir-version-check` - does not check Elixir version
-    * `--no-load-deps` - does not add deps loadpaths to the code path
+    * `--no-optional-deps` - does not compile or load optional deps
 
   """
 
   @impl true
   def run(args) do
     all = Mix.Dep.load_and_cache()
+
+    all =
+      if "--no-optional-deps" in args do
+        for dep <- all, dep.opts[:optional] != true, do: dep
+      else
+        all
+      end
+
     config = Mix.Project.config()
 
     unless "--no-elixir-version-check" in args do
@@ -34,13 +43,11 @@ defmodule Mix.Tasks.Deps.Loadpaths do
       deps_check(all, "--no-compile" in args)
     end
 
-    unless "--no-load-deps" in args do
-      for dep <- all,
-          path <- Mix.Dep.load_paths(dep) do
-        _ = Code.prepend_path(path)
-        path
-      end
+    unless "--no-deps-loading" in args do
+      Code.prepend_paths(Enum.flat_map(all, &Mix.Dep.load_paths/1))
     end
+
+    :ok
   end
 
   defp check_elixir_version(config) do
@@ -78,7 +85,7 @@ defmodule Mix.Tasks.Deps.Loadpaths do
         |> Enum.map(& &1.app)
         |> Mix.Dep.filter_by_name(Mix.Dep.load_and_cache())
         |> Enum.filter(&(not Mix.Dep.ok?(&1)))
-        |> show_not_ok!
+        |> show_not_ok!()
     end
   end
 

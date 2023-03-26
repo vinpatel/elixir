@@ -1,12 +1,13 @@
 -define(key(M, K), maps:get(K, M)).
 -define(ann(Meta), elixir_erl:get_ann(Meta)).
 -define(line(Meta), elixir_utils:get_line(Meta)).
--define(generated(Meta), [{generated, true} | Meta]).
+-define(generated(Meta), elixir_utils:generated(Meta)).
 -define(var_context, ?MODULE).
 -define(remote(Ann, Module, Function, Args), {call, Ann, {remote, Ann, {atom, Ann, Module}, {atom, Ann, Function}}, Args}).
 
 -record(elixir_ex, {
   caller=false,            %% stores if __CALLER__ is allowed
+  %% TODO: Remove warn and everywhere it is set in v2.0
   prematch=warn,           %% {Read, Counter} | warn | raise | pin | {bitsize,PreVars,OriginalVars}
   stacktrace=false,        %% stores if __STACKTRACE__ is allowed
   unused={#{}, 0},         %% a map of unused vars and a version counter for vars
@@ -25,7 +26,6 @@
 }).
 
 -record(elixir_tokenizer, {
-  file=(<<"nofile">>),
   terminators=[],
   unescape=true,
   cursor_completion=false,

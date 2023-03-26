@@ -72,7 +72,9 @@ defmodule Date.RangeTest do
     end
 
     test "for empty range" do
+      assert Enum.slice(@empty_range, 1, 3) == []
       assert Enum.slice(@empty_range, 3, 3) == []
+      assert Enum.slice(@empty_range, -1, 3) == []
       assert Enum.slice(@empty_range, -3, 3) == []
     end
   end
@@ -160,8 +162,8 @@ defmodule Date.RangeTest do
         last_in_iso_days: 738_350
       }
 
-      assert inspect(asc) == "#DateRange<~D[2021-07-14], ~D[2021-07-17]>"
-      assert inspect(desc) == "#DateRange<~D[2021-07-17], ~D[2021-07-14], -1>"
+      assert inspect(asc) == "Date.range(~D[2021-07-14], ~D[2021-07-17])"
+      assert inspect(desc) == "Date.range(~D[2021-07-17], ~D[2021-07-14], -1)"
     end
 
     test "enumerable" do

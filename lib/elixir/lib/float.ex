@@ -15,7 +15,7 @@ defmodule Float do
   ## Known issues
 
   There are some very well known problems with floating-point numbers
-  and arithmetics due to the fact most decimal fractions cannot be
+  and arithmetic due to the fact most decimal fractions cannot be
   represented by a floating-point binary and most operations are not exact,
   but operate on approximations. Those issues are not specific
   to Elixir, they are a property of floating point representation itself.
@@ -45,6 +45,31 @@ defmodule Float do
   @power_of_2_to_52 4_503_599_627_370_496
   @precision_range 0..15
   @type precision_range :: 0..15
+
+  @min_finite then(<<0xFFEFFFFFFFFFFFFF::64>>, fn <<num::float>> -> num end)
+  @max_finite then(<<0x7FEFFFFFFFFFFFFF::64>>, fn <<num::float>> -> num end)
+
+  @doc """
+  Returns the maximum finite value for a float.
+
+  ## Examples
+
+      iex> Float.max_finite()
+      1.7976931348623157e308
+
+  """
+  def max_finite, do: @max_finite
+
+  @doc """
+  Returns the minimum finite value for a float.
+
+  ## Examples
+
+      iex> Float.min_finite()
+      -1.7976931348623157e308
+
+  """
+  def min_finite, do: @min_finite
 
   @doc """
   Computes `base` raised to power of `exponent`.
@@ -94,7 +119,8 @@ defmodule Float do
   returned.
 
   If the size of float exceeds the maximum size of `1.7976931348623157e+308`,
-  the `ArgumentError` exception is raised.
+  `:error` is returned even though the textual representation itself might be
+  well formed.
 
   If you want to convert a string-formatted float directly to a float,
   `String.to_float/1` can be used instead.
@@ -109,6 +135,8 @@ defmodule Float do
       {56.5, "xyz"}
 
       iex> Float.parse("pi")
+      :error
+      iex> Float.parse("1.7976931348623159e+308")
       :error
 
   """
@@ -140,14 +168,25 @@ defmodule Float do
     do: parse_unsigned(rest, true, false, <<acc::binary, ?., digit>>)
 
   defp parse_unsigned(<<exp_marker, digit, rest::binary>>, dot?, false, acc)
-       when exp_marker in 'eE' and digit in ?0..?9,
+       when exp_marker in ~c"eE" and digit in ?0..?9,
        do: parse_unsigned(rest, true, true, <<add_dot(acc, dot?)::binary, ?e, digit>>)
 
   defp parse_unsigned(<<exp_marker, sign, digit, rest::binary>>, dot?, false, acc)
-       when exp_marker in 'eE' and sign in '-+' and digit in ?0..?9,
+       when exp_marker in ~c"eE" and sign in ~c"-+" and digit in ?0..?9,
        do: parse_unsigned(rest, true, true, <<add_dot(acc, dot?)::binary, ?e, sign, digit>>)
 
-  defp parse_unsigned(rest, dot?, _e?, acc),
+  # When floats are expressed in scientific notation, :erlang.binary_to_float/1 can raise an
+  # ArgumentError if the e exponent is too big. For example, "1.0e400". Because of this, we
+  # rescue the ArgumentError here and return an error.
+  defp parse_unsigned(rest, dot?, true = _e?, acc) do
+    :erlang.binary_to_float(add_dot(acc, dot?))
+  rescue
+    ArgumentError -> :error
+  else
+    float -> {float, rest}
+  end
+
+  defp parse_unsigned(rest, dot?, false = _e?, acc),
     do: {:erlang.binary_to_float(add_dot(acc, dot?)), rest}
 
   defp add_dot(acc, true), do: acc

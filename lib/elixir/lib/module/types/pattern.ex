@@ -366,6 +366,10 @@ defmodule Module.Types.Pattern do
   defp collect_var_indexes_from_expr(expr, context) do
     {_, vars} =
       Macro.prewalk(expr, %{}, fn
+        {:"::", _, [left, right]}, acc ->
+          # Do not mistake binary modifiers as variables
+          {collect_exprs_from_modifiers(right, [left]), acc}
+
         var, acc when is_var(var) ->
           var_name = var_name(var)
           %{^var_name => type} = context.vars
@@ -377,6 +381,18 @@ defmodule Module.Types.Pattern do
 
     Map.keys(vars)
   end
+
+  defp collect_exprs_from_modifiers({:-, _, [left, right]}, acc) do
+    collect_exprs_from_modifiers(left, collect_expr_from_modifier(right, acc))
+  end
+
+  defp collect_exprs_from_modifiers(modifier, acc) do
+    collect_expr_from_modifier(modifier, acc)
+  end
+
+  defp collect_expr_from_modifier({:unit, _, [arg]}, acc), do: [arg | acc]
+  defp collect_expr_from_modifier({:size, _, [arg]}, acc), do: [arg | acc]
+  defp collect_expr_from_modifier({var, _, ctx}, acc) when is_atom(var) and is_atom(ctx), do: acc
 
   defp unify_call(args, clauses, _expected, _mfa, _signature, stack, context, true = _type_guard?) do
     unify_type_guard_call(args, clauses, stack, context)
@@ -403,10 +419,8 @@ defmodule Module.Types.Pattern do
     # bar, {:ok, baz}
     # bar, {:ok, bat}
 
-    expanded_args =
-      args
-      |> Enum.map(&flatten_union(&1, context))
-      |> cartesian_product()
+    flatten_args = Enum.map(args, &flatten_union(&1, context))
+    cartesian_args = cartesian_product(flatten_args)
 
     # Remove clauses that do not match the expected type
     # Ignore type variables in parameters by changing them to dynamic
@@ -425,11 +439,11 @@ defmodule Module.Types.Pattern do
     # the type contexts from unifying argument and parameter to
     # infer type variables in arguments
     result =
-      flat_map_ok(expanded_args, fn expanded_args ->
+      flat_map_ok(cartesian_args, fn cartesian_args ->
         result =
           Enum.flat_map(clauses, fn {params, return} ->
             result =
-              map_ok(Enum.zip(expanded_args, params), fn {arg, param} ->
+              map_ok(Enum.zip(cartesian_args, params), fn {arg, param} ->
                 case unify(arg, param, stack, context) do
                   {:ok, _type, context} -> {:ok, context}
                   {:error, reason} -> {:error, reason}
@@ -453,7 +467,13 @@ defmodule Module.Types.Pattern do
       {:ok, returns_contexts} ->
         {success_returns, contexts} = Enum.unzip(returns_contexts)
         contexts = Enum.concat(contexts)
-        indexes = Enum.uniq(Enum.flat_map(args, &collect_var_indexes_from_type/1))
+
+        indexes =
+          for types <- flatten_args,
+              type <- types,
+              index <- collect_var_indexes_from_type(type),
+              do: index,
+              uniq: true
 
         # Build unions from collected type contexts to unify with
         # type variables from arguments

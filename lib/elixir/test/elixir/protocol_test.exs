@@ -74,6 +74,14 @@ defmodule ProtocolTest do
     end
   end
 
+  defmodule ImplStructExplicitFor do
+    defstruct a: 0, b: 0
+
+    defimpl Sample, for: __MODULE__ do
+      def ok(_struct), do: true
+    end
+  end
+
   test "protocol implementations without any" do
     assert is_nil(Sample.impl_for(:foo))
     assert is_nil(Sample.impl_for(fn x -> x end))
@@ -91,6 +99,7 @@ defmodule ProtocolTest do
     assert is_nil(Sample.impl_for(make_ref()))
 
     assert Sample.impl_for(%ImplStruct{}) == Sample.ProtocolTest.ImplStruct
+    assert Sample.impl_for(%ImplStructExplicitFor{}) == Sample.ProtocolTest.ImplStructExplicitFor
     assert Sample.impl_for(%NoImplStruct{}) == nil
   end
 
@@ -117,7 +126,6 @@ defmodule ProtocolTest do
 
     write_beam(
       defprotocol SampleDocsProto do
-        @type t :: any
         @doc "Ok"
         @deprecated "Reason"
         @spec ok(t) :: boolean
@@ -126,6 +134,9 @@ defmodule ProtocolTest do
     )
 
     {:docs_v1, _, _, _, _, _, docs} = Code.fetch_docs(SampleDocsProto)
+
+    assert {{:type, :t, 0}, _, [], %{"en" => type_doc}, _} = List.keyfind(docs, {:type, :t, 0}, 0)
+    assert type_doc =~ "All the types that implement this protocol"
 
     assert {{:function, :ok, 1}, _, ["ok(term)"], %{"en" => "Ok"}, _} =
              List.keyfind(docs, {:function, :ok, 1}, 0)
@@ -148,6 +159,10 @@ defmodule ProtocolTest do
 
     assert [{:type, 23, :fun, args}] = get_callbacks(@with_any_binary, :ok, 1)
     assert args == [{:type, 23, :product, [{:user_type, 23, :t, []}]}, {:type, 23, :term, []}]
+  end
+
+  test "protocol defines t/0 type with documentation" do
+    assert {:type, {:t, {_, _, :any, []}, []}} = get_type(@sample_binary, :t, 0)
   end
 
   test "protocol defines functions and attributes" do
@@ -221,6 +236,15 @@ defmodule ProtocolTest do
     List.keyfind(callbacks, {name, arity}, 0) |> elem(1)
   end
 
+  defp get_type(beam, name, arity) do
+    {:ok, types} = Code.Typespec.fetch_types(beam)
+
+    assert {:value, value} =
+             :lists.search(&match?({_, {^name, _, args}} when length(args) == arity, &1), types)
+
+    value
+  end
+
   test "derives protocol implicitly" do
     struct = %ImplStruct{a: 1, b: 1}
     assert WithAny.ok(struct) == {:ok, struct}
@@ -267,27 +291,103 @@ defmodule ProtocolTest do
              String.to_charlist(__ENV__.file)
   end
 
-  test "cannot derive without any implementation" do
-    assert_raise ArgumentError,
-                 ~r"could not load module #{inspect(Sample.Any)} due to reason :nofile, cannot derive #{inspect(Sample)}",
-                 fn ->
-                   defmodule NotCompiled do
-                     @derive [Sample]
-                     defstruct hello: :world
-                   end
-                 end
+  describe "warnings" do
+    import ExUnit.CaptureIO
+
+    test "with no definitions" do
+      assert capture_io(:stderr, fn ->
+               defprotocol SampleWithNoDefinitions do
+               end
+             end) =~ "protocols must define at least one function, but none was defined"
+    end
+
+    test "when @callbacks and friends are defined inside a protocol" do
+      message =
+        capture_io(:stderr, fn ->
+          defprotocol SampleWithCallbacks do
+            @spec with_specs(any(), keyword()) :: tuple()
+            def with_specs(term, options \\ [])
+
+            @spec with_specs_and_when(any(), opts) :: tuple() when opts: keyword
+            def with_specs_and_when(term, options \\ [])
+
+            def without_specs(term, options \\ [])
+
+            @callback foo :: {:ok, term}
+            @callback foo(term) :: {:ok, term}
+            @callback foo(term, keyword) :: {:ok, term, keyword}
+
+            @callback foo_when :: {:ok, x} when x: term
+            @callback foo_when(x) :: {:ok, x} when x: term
+            @callback foo_when(x, opts) :: {:ok, x, opts} when x: term, opts: keyword
+
+            @macrocallback bar(term) :: {:ok, term}
+            @macrocallback bar(term, keyword) :: {:ok, term, keyword}
+
+            @optional_callbacks [foo: 1, foo: 2]
+            @optional_callbacks [without_specs: 2]
+          end
+        end)
+
+      assert message =~
+               "cannot define @callback foo/0 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @callback foo/1 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @callback foo/2 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @callback foo_when/0 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @callback foo_when/1 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @callback foo_when/2 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @macrocallback bar/1 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @macrocallback bar/2 inside protocol, use def/1 to outline your protocol definition"
+
+      assert message =~
+               "cannot define @optional_callbacks inside protocol, all of the protocol definitions are required"
+    end
+
+    test "when deriving after struct" do
+      assert capture_io(:stderr, fn ->
+               defmodule DeriveTooLate do
+                 defstruct []
+                 @derive [{Derivable, :ok}]
+               end
+             end) =~
+               "module attribute @derive was set after defstruct, all @derive calls must come before defstruct"
+    end
+
+    test "when deriving with no struct" do
+      assert capture_io(:stderr, fn ->
+               defmodule DeriveNeverUsed do
+                 @derive [{Derivable, :ok}]
+               end
+             end) =~
+               "module attribute @derive was set but never used (it must come before defstruct)"
+    end
   end
 
-  test "malformed @callback raises with CompileError" do
-    assert_raise CompileError,
-                 "nofile:2: type specification missing return type: foo(term)",
-                 fn ->
-                   Code.eval_string("""
-                   defprotocol WithMalformedCallback do
-                     @callback foo(term)
+  describe "errors" do
+    test "cannot derive without any implementation" do
+      assert_raise ArgumentError,
+                   ~r"could not load module #{inspect(Sample.Any)} due to reason :nofile, cannot derive #{inspect(Sample)}",
+                   fn ->
+                     defmodule NotCompiled do
+                       @derive [Sample]
+                       defstruct hello: :world
+                     end
                    end
-                   """)
-                 end
+    end
   end
 end
 
@@ -299,6 +399,7 @@ defmodule Protocol.DebugInfoTest do
 
     {:module, _, binary, _} =
       defprotocol DebugInfoProto do
+        def example(info)
       end
 
     assert {:ok, {DebugInfoProto, [debug_info: debug_info]}} =

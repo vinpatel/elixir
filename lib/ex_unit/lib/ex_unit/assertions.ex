@@ -101,29 +101,21 @@ defmodule ExUnit.Assertions do
       assert nil = some_function_that_returns_nil()
 
   Even though the match works, `assert` still expects a truth
-  value. In such cases, simply use `Kernel.==/2` or
-  `Kernel.match?/2`.
+  value. In such cases, simply use `==/2` or `match?/2`.
   """
   defmacro assert({:=, meta, [left, right]} = assertion) do
     code = escape_quoted(:assert, meta, assertion)
 
-    # If the match works, we need to check if the value
-    # is not nil nor false. We need to rewrite the if
-    # to avoid silly warnings though.
     check =
-      suppress_warning(
-        quote do
-          case right do
-            x when x in [nil, false] ->
-              raise ExUnit.AssertionError,
-                expr: expr,
-                message: "Expected truthy, got #{inspect(right)}"
-
-            _ ->
-              :ok
-          end
+      quote generated: true do
+        if right do
+          :ok
+        else
+          raise ExUnit.AssertionError,
+            expr: expr,
+            message: "Expected truthy, got #{inspect(right)}"
         end
-      )
+      end
 
     __match__(left, right, code, check, __CALLER__)
   end
@@ -155,17 +147,15 @@ defmodule ExUnit.Assertions do
     else
       {args, value} = extract_args(assertion, __CALLER__)
 
-      quote do
-        value = unquote(value)
-
-        unless value do
+      quote generated: true do
+        if value = unquote(value) do
+          value
+        else
           raise ExUnit.AssertionError,
             args: unquote(args),
             expr: unquote(escape_quoted(:assert, [], assertion)),
             message: "Expected truthy, got #{inspect(value)}"
         end
-
-        value
       end
     end
   end
@@ -181,8 +171,7 @@ defmodule ExUnit.Assertions do
   The code above will fail because the `=` operator always fails
   when the sides do not match and `refute/2` does not change it.
 
-  The correct way to write the refutation above is to use
-  `Kernel.match?/2`:
+  The correct way to write the refutation above is to use `match?/2`:
 
       refute match?({:ok, _}, some_function_that_returns_error_tuple())
 
@@ -219,17 +208,15 @@ defmodule ExUnit.Assertions do
     else
       {args, value} = extract_args(assertion, __CALLER__)
 
-      quote do
-        value = unquote(value)
-
-        if value do
+      quote generated: true do
+        if value = unquote(value) do
           raise ExUnit.AssertionError,
             args: unquote(args),
             expr: unquote(escape_quoted(:refute, [], assertion)),
             message: "Expected false or nil, got #{inspect(value)}"
+        else
+          value
         end
-
-        value
       end
     end
   end
@@ -240,22 +227,26 @@ defmodule ExUnit.Assertions do
 
   defp translate_assertion(:assert, {operator, meta, [_, _]} = expr, caller)
        when operator in @operator do
-    left = Macro.var(:left, __MODULE__)
-    right = Macro.var(:right, __MODULE__)
-    call = {operator, meta, [left, right]}
-    equality_check? = operator in [:<, :>, :!==, :!=]
-    message = "Assertion with #{operator} failed"
-    translate_operator(:assert, expr, call, message, equality_check?, caller)
+    if match?([{_, Kernel}], Macro.Env.lookup_import(caller, {operator, 2})) do
+      left = Macro.var(:left, __MODULE__)
+      right = Macro.var(:right, __MODULE__)
+      call = {operator, meta, [left, right]}
+      equality_check? = operator in [:<, :>, :!==, :!=]
+      message = "Assertion with #{operator} failed"
+      translate_operator(:assert, expr, call, message, equality_check?, caller)
+    end
   end
 
   defp translate_assertion(:refute, {operator, meta, [_, _]} = expr, caller)
        when operator in @operator do
-    left = Macro.var(:left, __MODULE__)
-    right = Macro.var(:right, __MODULE__)
-    call = {:not, meta, [{operator, meta, [left, right]}]}
-    equality_check? = operator in [:<=, :>=, :===, :==, :=~]
-    message = "Refute with #{operator} failed"
-    translate_operator(:refute, expr, call, message, equality_check?, caller)
+    if match?([{_, Kernel}], Macro.Env.lookup_import(caller, {operator, 2})) do
+      left = Macro.var(:left, __MODULE__)
+      right = Macro.var(:right, __MODULE__)
+      call = {:not, meta, [{operator, meta, [left, right]}]}
+      equality_check? = operator in [:<=, :>=, :===, :==, :=~]
+      message = "Refute with #{operator} failed"
+      translate_operator(:refute, expr, call, message, equality_check?, caller)
+    end
   end
 
   defp translate_assertion(_kind, _expected, _caller) do
@@ -269,19 +260,21 @@ defmodule ExUnit.Assertions do
     quote do
       left = unquote(left)
       right = unquote(right)
+      expr = unquote(expr)
+      message = unquote(message)
 
       if ExUnit.Assertions.__equal__?(left, right) do
         ExUnit.Assertions.assert(false,
           left: left,
-          expr: unquote(expr),
-          message: unquote(message <> ", both sides are exactly equal")
+          expr: expr,
+          message: message <> ", both sides are exactly equal"
         )
       else
         ExUnit.Assertions.assert(unquote(call),
           left: left,
           right: right,
-          expr: unquote(expr),
-          message: unquote(message),
+          expr: expr,
+          message: message,
           context: unquote(context)
         )
       end
@@ -604,6 +597,12 @@ defmodule ExUnit.Assertions do
   defp collect_pins_from_pattern(expr, vars) do
     {_, pins} =
       Macro.prewalk(expr, %{}, fn
+        {:quote, _, [_]}, acc ->
+          {:ok, acc}
+
+        {:quote, _, [_, _]}, acc ->
+          {:ok, acc}
+
         {:^, _, [var]}, acc ->
           identifier = var_context(var)
 
@@ -640,14 +639,14 @@ defmodule ExUnit.Assertions do
       {:"::", _, [left, right]}, acc ->
         {[left], collect_vars_from_binary(right, acc)}
 
-      {skip, _, [_]}, acc when skip in [:^, :@] ->
+      {skip, _, [_]}, acc when skip in [:^, :@, :quote] ->
+        {:ok, acc}
+
+      {skip, _, [_, _]}, acc when skip in [:quote] ->
         {:ok, acc}
 
       {:_, _, context}, acc when is_atom(context) ->
         {:ok, acc}
-
-      {_, [{:expanded, expanded} | _], _}, acc ->
-        {[expanded], acc}
 
       {name, meta, context}, acc when is_atom(name) and is_atom(context) ->
         {:ok, [{name, meta, context} | acc]}
@@ -682,33 +681,45 @@ defmodule ExUnit.Assertions do
 
   @doc false
   def __expand_pattern__({:when, meta, [left, right]}, caller) do
-    left = prewalk_expand_pattern(left, Macro.Env.to_match(caller))
-    right = prewalk_expand_pattern(right, %{caller | context: :guard})
+    left = expand_pattern(left, Macro.Env.to_match(caller))
+    right = expand_pattern(right, %{caller | context: :guard})
     {:when, meta, [left, right]}
   end
 
   def __expand_pattern__(expr, caller) do
-    prewalk_expand_pattern(expr, Macro.Env.to_match(caller))
+    expand_pattern(expr, Macro.Env.to_match(caller))
   end
 
-  defp prewalk_expand_pattern(expr, caller) do
-    Macro.prewalk(expr, fn
-      {:__aliases__, _, _} = expr ->
-        Macro.expand(expr, caller)
+  defp expand_pattern({:quote, _, [_]} = expr, _caller), do: expr
+  defp expand_pattern({:quote, _, [_, _]} = expr, _caller), do: expr
+  defp expand_pattern({:__aliases__, _, _} = expr, caller), do: Macro.expand(expr, caller)
 
-      {:@, _, [{attribute, _, _}]} ->
-        caller.module |> Module.get_attribute(attribute) |> Macro.escape()
+  defp expand_pattern({:@, _, [{attribute, _, _}]}, caller) do
+    caller.module |> Module.get_attribute(attribute) |> Macro.escape()
+  end
 
-      {left, meta, right} = expr ->
-        case Macro.expand(expr, caller) do
-          ^expr -> expr
-          other -> {left, [expanded: other] ++ meta, right}
-        end
+  defp expand_pattern({left, meta, right} = expr, caller) do
+    case Macro.expand(expr, caller) do
+      ^expr ->
+        {expand_pattern(left, caller), meta, expand_pattern(right, caller)}
+
+      {left, meta, right} ->
+        {expand_pattern(left, caller), [original: expr] ++ meta, expand_pattern(right, caller)}
 
       other ->
-        Macro.expand(other, caller)
-    end)
+        other
+    end
   end
+
+  defp expand_pattern({left, right}, caller) do
+    {expand_pattern(left, caller), expand_pattern(right, caller)}
+  end
+
+  defp expand_pattern([_ | _] = list, caller) do
+    Enum.map(list, &expand_pattern(&1, caller))
+  end
+
+  defp expand_pattern(other, _caller), do: other
 
   defp suppress_warning({name, meta, [expr, [do: clauses]]}) do
     clauses =
@@ -762,6 +773,10 @@ defmodule ExUnit.Assertions do
 
       assert_raise ArithmeticError, fn ->
         1 + "test"
+      end
+
+      assert_raise RuntimeError, fn ->
+        raise "assertion will pass due to this raise"
       end
 
   """
@@ -857,7 +872,7 @@ defmodule ExUnit.Assertions do
       assert catch_exit(exit(1)) == 1
 
   To assert exits from linked processes started from the test, trap exits
-  with `Process.flag/2` and assert the exit message with `assert_received/2`.
+  with `Process.flag/2` and assert the exit message with `assert_receive/2`.
 
       Process.flag(:trap_exit, true)
       pid = spawn_link(fn -> Process.exit(self(), :normal) end)

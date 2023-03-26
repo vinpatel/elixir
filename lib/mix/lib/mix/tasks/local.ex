@@ -1,10 +1,10 @@
 defmodule Mix.Tasks.Local do
   use Mix.Task
 
-  @shortdoc "Lists local tasks"
+  @shortdoc "Lists tasks installed locally via archives"
 
   @moduledoc """
-  Lists local tasks.
+  Lists tasks installed locally via archives.
   """
 
   @impl true
@@ -25,7 +25,7 @@ defmodule Mix.Tasks.Local do
     sorted = Enum.sort(docs)
 
     Enum.each(sorted, fn {task, doc} ->
-      shell.info(format('mix ~-#{max}s # ~ts', [task, doc]))
+      shell.info(format(~c"mix ~-#{max}s # ~ts", [task, doc]))
     end)
   end
 

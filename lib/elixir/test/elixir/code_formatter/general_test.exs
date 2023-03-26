@@ -7,6 +7,20 @@ defmodule Code.Formatter.GeneralTest do
 
   @short_length [line_length: 10]
 
+  test "does not emit warnings" do
+    assert_format "fn -> end", "fn -> nil end"
+  end
+
+  describe "unicode normalization" do
+    test "with nfc normalizations" do
+      assert_format "ç", "ç"
+    end
+
+    test "with custom normalizations" do
+      assert_format "µs", "μs"
+    end
+  end
+
   describe "aliases" do
     test "with atom-only parts" do
       assert_same "Elixir"
@@ -21,7 +35,7 @@ defmodule Code.Formatter.GeneralTest do
     test "starting with expression" do
       assert_same "__MODULE__.Foo.Bar"
       # Syntactically valid, semantically invalid
-      assert_same "'Foo'.Bar.Baz"
+      assert_same ~S[~c"Foo".Bar.Baz]
     end
 
     test "wraps the head in parens if it has an operator" do
@@ -37,6 +51,8 @@ defmodule Code.Formatter.GeneralTest do
       assert_same ~S[~r/Bar Baz/]
       assert_same ~S[~w<>]
       assert_same ~S[~W()]
+      assert_same ~S[~MAT()]
+      assert_same ~S[~MAT{1,2,3}]
     end
 
     test "with escapes" do
@@ -126,26 +142,48 @@ defmodule Code.Formatter.GeneralTest do
       """
 
       formatter = fn content, opts ->
-        assert opts == [sigil: :W, modifiers: []]
+        assert opts == [file: nil, line: 1, sigil: :W, modifiers: [], opening_delimiter: "/"]
         content |> String.split(~r/ +/) |> Enum.join(" ")
       end
 
       assert_format bad, good, sigils: [W: formatter]
 
       bad = """
-      var = ~W/foo  bar  baz/abc
+      var = ~W<foo  bar  baz>abc
       """
 
       good = """
-      var = ~W/foo bar baz/abc
+      var = ~W<foo bar baz>abc
       """
 
       formatter = fn content, opts ->
-        assert opts == [sigil: :W, modifiers: 'abc']
-        content |> String.split(~r/ +/) |> Enum.join(" ")
+        assert opts == [file: nil, line: 1, sigil: :W, modifiers: ~c"abc", opening_delimiter: "<"]
+        content |> String.split(~r/ +/) |> Enum.intersperse(" ")
       end
 
       assert_format bad, good, sigils: [W: formatter]
+
+      bad = """
+      var = ~MAT{foo  bar  baz}abc
+      """
+
+      good = """
+      var = ~MAT{foo bar baz}abc
+      """
+
+      formatter = fn content, opts ->
+        assert opts == [
+                 file: nil,
+                 line: 1,
+                 sigil: :MAT,
+                 modifiers: ~c"abc",
+                 opening_delimiter: "{"
+               ]
+
+        content |> String.split(~r/ +/) |> Enum.intersperse(" ")
+      end
+
+      assert_format bad, good, sigils: [MAT: formatter]
     end
 
     test "with custom formatting on heredocs" do
@@ -162,34 +200,41 @@ defmodule Code.Formatter.GeneralTest do
       """
 
       formatter = fn content, opts ->
-        assert opts == [sigil: :W, modifiers: []]
+        assert opts == [file: nil, line: 1, sigil: :W, modifiers: [], opening_delimiter: "'''"]
         content |> String.split(~r/ +/) |> Enum.join(" ")
       end
 
       assert_format bad, good, sigils: [W: formatter]
 
-      bad = """
+      bad = ~S'''
       if true do
-        ~W'''
+        ~W"""
         foo
         bar
         baz
-        '''abc
+        """abc
       end
-      """
+      '''
 
-      good = """
+      good = ~S'''
       if true do
-        ~W'''
+        ~W"""
         foo
         bar
         baz
-        '''abc
+        """abc
       end
-      """
+      '''
 
       formatter = fn content, opts ->
-        assert opts == [sigil: :W, modifiers: 'abc']
+        assert opts == [
+                 file: nil,
+                 line: 2,
+                 sigil: :W,
+                 modifiers: ~c"abc",
+                 opening_delimiter: ~S/"""/
+               ]
+
         content |> String.split(~r/ +/) |> Enum.join("\n")
       end
 
@@ -323,19 +368,19 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with heredocs" do
-      assert_same """
+      assert_same ~S'''
       fn
         arg1 ->
-          '''
+          """
           foo
-          '''
+          """
 
         arg2 ->
-          '''
+          """
           bar
-          '''
+          """
       end
-      """
+      '''
     end
 
     test "with multiple empty clauses" do
@@ -453,8 +498,10 @@ defmodule Code.Formatter.GeneralTest do
 
   describe "anonymous functions types" do
     test "with a single clause and no arguments" do
-      assert_format "(->:ok)", "(() -> :ok)"
-      assert_same "(() -> :really_long_atom)", @short_length
+      assert_same "(-> :ok)"
+      assert_format "(->:ok)", "(-> :ok)"
+      assert_format "( -> :ok)", "(-> :ok)"
+      assert_format "(() -> :really_long_atom)", "(-> :really_long_atom)", @short_length
       assert_same "(() when node() == :nonode@nohost -> true)"
     end
 
@@ -538,19 +585,19 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with heredocs" do
-      assert_same """
+      assert_same ~S'''
       (
         arg1 ->
-          '''
+          """
           foo
-          '''
+          """
 
         arg2 ->
-          '''
+          """
           bar
-          '''
+          """
       )
-      """
+      '''
     end
 
     test "with multiple empty clauses" do
@@ -690,17 +737,17 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with heredoc" do
-      assert_same """
+      assert_same ~S'''
       block do
-        '''
+        """
         a
 
         b
 
         c
-        '''
+        """
       end
-      """
+      '''
     end
 
     test "keeps user newlines" do
@@ -809,14 +856,14 @@ defmodule Code.Formatter.GeneralTest do
     end
 
     test "with module attributes" do
-      assert_same """
+      assert_same ~S'''
       defmodule Foo do
         @constant 1
         @constant 2
 
-        @doc '''
+        @doc """
         foo
-        '''
+        """
         def foo do
           :ok
         end
@@ -830,9 +877,9 @@ defmodule Code.Formatter.GeneralTest do
         @other_constant 3
 
         @spec baz :: 4
-        @doc '''
+        @doc """
         baz
-        '''
+        """
         def baz do
           :ok
         end
@@ -840,15 +887,15 @@ defmodule Code.Formatter.GeneralTest do
         @another_constant 5
         @another_constant 5
 
-        @doc '''
+        @doc """
         baz
-        '''
+        """
         @spec baz :: 6
         def baz do
           :ok
         end
       end
-      """
+      '''
     end
 
     test "as function arguments" do

@@ -192,21 +192,21 @@ defmodule Kernel.BinaryTest do
   end
 
   test "literal errors" do
-    message = ~r"conflicting type specification for bit field"
+    message = "conflicting type specification for bit field"
 
-    assert_raise CompileError, message, fn ->
+    assert_compile_error(message, fn ->
       Code.eval_string(~s[<<"foo"::integer>>])
-    end
+    end)
 
-    assert_raise CompileError, message, fn ->
+    assert_compile_error(message, fn ->
       Code.eval_string(~s[<<"foo"::float>>])
-    end
+    end)
 
-    message = ~r"invalid literal 'foo'"
+    message = "invalid literal ~c\"foo\""
 
-    assert_raise CompileError, message, fn ->
+    assert_compile_error(message, fn ->
       Code.eval_string(~s[<<'foo'::binary>>])
-    end
+    end)
   end
 
   @bitstring <<"foo", 16::4>>
@@ -250,7 +250,7 @@ defmodule Kernel.BinaryTest do
 
     foo = %{bar: 5}
     assert <<1::size(foo.bar)>>
-    assert <<1::size(length('abcd'))>>
+    assert <<1::size(length(~c"abcd"))>>
     assert <<255::size(hd(List.flatten([3])))>>
   end
 
@@ -258,19 +258,19 @@ defmodule Kernel.BinaryTest do
     x = 8
     assert <<1::size(x - 5)>> = <<1::3>>
     assert <<1::size(x - 5)-unit(8)>> = <<1::3*8>>
-    assert <<1::size(length('abcd'))>> = <<1::4>>
+    assert <<1::size(length(~c"abcd"))>> = <<1::4>>
 
     foo = %{bar: 5}
     assert <<1::size(foo.bar)>> = <<1::5>>
   end
 
-  defmacrop signed_16 do
+  defmacro signed_16 do
     quote do
       big - signed - integer - unit(16)
     end
   end
 
-  defmacrop refb_spec do
+  defmacro refb_spec do
     quote do
       1 * 8 - big - signed - integer
     end
@@ -281,10 +281,40 @@ defmodule Kernel.BinaryTest do
     sec_data = "another"
 
     <<
-      byte_size(refb)::refb_spec,
+      byte_size(refb)::refb_spec(),
       refb::binary,
-      byte_size(sec_data)::size(1)-signed_16,
+      byte_size(sec_data)::size(1)-signed_16(),
       sec_data::binary
     >>
+  end
+
+  test "bitsyntax macro is expanded with a warning" do
+    assert capture_err(fn ->
+             Code.eval_string("<<1::refb_spec>>", [], __ENV__)
+           end) =~
+             "bitstring specifier \"refb_spec\" does not exist and is being expanded to \"refb_spec()\""
+
+    assert capture_err(fn ->
+             Code.eval_string("<<1::size(1)-signed_16>>", [], __ENV__)
+           end) =~
+             "bitstring specifier \"signed_16\" does not exist and is being expanded to \"signed_16()\""
+  end
+
+  test "bitsyntax with extra parentheses warns" do
+    assert capture_err(fn ->
+             Code.eval_string("<<1::big()>>")
+           end) =~ "extra parentheses on a bitstring specifier \"big()\" have been deprecated"
+
+    assert capture_err(fn ->
+             Code.eval_string("<<1::size(8)-integer()>>")
+           end) =~ "extra parentheses on a bitstring specifier \"integer()\" have been deprecated"
+  end
+
+  defp capture_err(fun) do
+    ExUnit.CaptureIO.capture_io(:stderr, fun)
+  end
+
+  defp assert_compile_error(message, fun) do
+    assert capture_err(fn -> assert_raise CompileError, fun end) =~ message
   end
 end

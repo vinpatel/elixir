@@ -43,15 +43,32 @@ defmodule Access do
       iex> put_in(users["john"][:age], 28)
       %{"john" => %{age: 28}, "meg" => %{age: 23}}
 
-  > Attention! While the access syntax is allowed in maps via
-  > `map[key]`, if your map is made of predefined atom keys,
-  > you should prefer to access those atom keys with `map.key`
-  > instead of `map[key]`, as `map.key` will raise if the key
-  > is missing (which is not supposed to happen if the keys are
-  > predefined). Similarly, since structs are maps and structs
-  > have predefined keys, they only allow the `struct.key`
-  > syntax and they do not allow the `struct[key]` access syntax.
-  > See the `Map` module for more information.
+  ## Maps and structs
+
+  While the access syntax is allowed in maps via `map[key]`,
+  if your map is made of predefined atom keys, you should prefer
+  to access those atom keys with `map.key` instead of `map[key]`,
+  as `map.key` will raise if the key is missing (which is not
+  supposed to happen if the keys are predefined).
+
+  Similarly, since structs are maps and structs have predefined
+  keys, they only allow the `struct.key` syntax and they do not
+  allow the `struct[key]` access syntax. `Access.key/1` can also
+  be used to construct dynamic access to structs and maps.
+
+  In a nutshell, when using `put_in/2` and friends:
+
+      put_in(struct_or_map.key, :value)
+      put_in(keyword_or_map[:key], :value)
+
+  When using `put_in/3` and friends:
+
+      put_in(struct_or_map, [Access.key!(:key)], :value)
+      put_in(keyword_or_map, [:key], :value)
+
+  This covers the dual nature of maps in Elixir, as they can be
+  either for structured data or as a key-value store. See the `Map`
+  module for more information.
 
   ## Nested data structures
 
@@ -629,6 +646,10 @@ defmodule Access do
   @doc ~S"""
   Returns a function that accesses the element at `index` (zero based) of a list.
 
+  Keep in mind that index lookups in lists take linear time: the larger the list,
+  the longer it will take to access its index. Therefore index-based operations
+  are generally avoided in favor of other functions in the `Enum` module.
+
   The returned function is typically passed as an accessor to `Kernel.get_in/2`,
   `Kernel.get_and_update_in/3`, and friends.
 
@@ -827,6 +848,120 @@ defmodule Access do
   end
 
   defp get_and_update_filter([], _func, _next, updates, gets) do
+    {:lists.reverse(gets), :lists.reverse(updates)}
+  end
+
+  @doc ~S"""
+  Returns a function that accesses all items of a list that are within the provided range.
+
+  The range will be normalized following the same rules from `Enum.slice/2`.
+
+  The returned function is typically passed as an accessor to `Kernel.get_in/2`,
+  `Kernel.get_and_update_in/3`, and friends.
+
+  ## Examples
+
+      iex> list = [%{name: "john", salary: 10}, %{name: "francine", salary: 30}, %{name: "vitor", salary: 25}]
+      iex> get_in(list, [Access.slice(1..2), :name])
+      ["francine", "vitor"]
+      iex> get_and_update_in(list, [Access.slice(1..3//2), :name], fn prev ->
+      ...>   {prev, String.upcase(prev)}
+      ...> end)
+      {["francine"], [%{name: "john", salary: 10}, %{name: "FRANCINE", salary: 30}, %{name: "vitor", salary: 25}]}
+
+  `slice/1` can also be used to pop elements out of a list or
+  a key inside of a list:
+
+      iex> list = [%{name: "john", salary: 10}, %{name: "francine", salary: 30}, %{name: "vitor", salary: 25}]
+      iex> pop_in(list, [Access.slice(-2..-1)])
+      {[%{name: "francine", salary: 30}, %{name: "vitor", salary: 25}], [%{name: "john", salary: 10}]}
+      iex> pop_in(list, [Access.slice(-2..-1), :name])
+      {["francine", "vitor"], [%{name: "john", salary: 10}, %{salary: 30}, %{salary: 25}]}
+
+  When no match is found, an empty list is returned and the update function is never called
+
+      iex> list = [%{name: "john", salary: 10}, %{name: "francine", salary: 30}, %{name: "vitor", salary: 25}]
+      iex> get_in(list, [Access.slice(5..10//2), :name])
+      []
+      iex> get_and_update_in(list, [Access.slice(5..10//2), :name], fn prev ->
+      ...>   {prev, String.upcase(prev)}
+      ...> end)
+      {[], [%{name: "john", salary: 10}, %{name: "francine", salary: 30}, %{name: "vitor", salary: 25}]}
+
+  An error is raised if the accessed structure is not a list:
+
+      iex> get_in(%{}, [Access.slice(2..10//3)])
+      ** (ArgumentError) Access.slice/1 expected a list, got: %{}
+
+  An error is raised if the step of the range is negative:
+
+      iex> get_in([], [Access.slice(2..10//-1)])
+      ** (ArgumentError) Access.slice/1 does not accept ranges with negative steps, got: 2..10//-1
+
+  """
+  @doc since: "1.14"
+  @spec slice(Range.t()) :: access_fun(data :: list, current_value :: list)
+  def slice(%Range{} = range) do
+    if range.step > 0 do
+      fn op, data, next -> slice(op, data, range, next) end
+    else
+      raise ArgumentError,
+            "Access.slice/1 does not accept ranges with negative steps, got: #{inspect(range)}"
+    end
+  end
+
+  defp slice(:get, data, %Range{} = range, next) when is_list(data) do
+    data
+    |> Enum.slice(range)
+    |> Enum.map(next)
+  end
+
+  defp slice(:get_and_update, data, range, next) when is_list(data) do
+    range = normalize_range(range, data)
+
+    if range.first > range.last do
+      {[], data}
+    else
+      get_and_update_slice(data, range, next, [], [], 0)
+    end
+  end
+
+  defp slice(_op, data, _range, _next) do
+    raise ArgumentError, "Access.slice/1 expected a list, got: #{inspect(data)}"
+  end
+
+  defp normalize_range(%Range{first: first, last: last, step: step}, list)
+       when first < 0 or last < 0 do
+    count = length(list)
+    first = if first >= 0, do: first, else: Kernel.max(first + count, 0)
+    last = if last >= 0, do: last, else: last + count
+    Range.new(first, last, step)
+  end
+
+  defp normalize_range(range, _list), do: range
+
+  defp get_and_update_slice([head | rest], range, next, updates, gets, index) do
+    if index in range do
+      case next.(head) do
+        :pop ->
+          get_and_update_slice(rest, range, next, updates, [head | gets], index + 1)
+
+        {get, update} ->
+          get_and_update_slice(
+            rest,
+            range,
+            next,
+            [update | updates],
+            [get | gets],
+            index + 1
+          )
+      end
+    else
+      get_and_update_slice(rest, range, next, [head | updates], gets, index + 1)
+    end
+  end
+
+  defp get_and_update_slice([], _range, _next, updates, gets, _index) do
     {:lists.reverse(gets), :lists.reverse(updates)}
   end
 end

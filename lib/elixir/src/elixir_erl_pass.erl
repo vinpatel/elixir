@@ -158,7 +158,7 @@ translate({'try', Meta, [Opts]}, _Ann, S) ->
       {[], SC}
   end,
 
-  Else = elixir_erl_clauses:get_clauses(else, Opts, match),
+  Else = elixir_erl_clauses:get_clauses('else', Opts, match),
   {TElse, SE} = elixir_erl_clauses:clauses(Else, SA),
   {{'try', ?ann(Meta), unblock(TDo), TElse, TCatch, TAfter}, SE};
 
@@ -182,7 +182,7 @@ translate({'receive', Meta, [Opts]}, _Ann, S) ->
 %% Comprehensions and with
 
 translate({for, Meta, [_ | _] = Args}, _Ann, S) ->
-  elixir_erl_for:translate(Meta, Args, true, S);
+  elixir_erl_for:translate(Meta, Args, S);
 
 translate({with, Meta, [_ | _] = Args}, _Ann, S) ->
   {Exprs, [{do, Do} | Opts]} = elixir_utils:split_last(Args),
@@ -224,7 +224,8 @@ translate({{'.', _, [Left, Right]}, Meta, []}, _Ann, #elixir_erl{context=guard} 
   TRight = {atom, Ann, Right},
   {?remote(Ann, erlang, map_get, [TRight, TLeft]), SL};
 
-translate({{'.', _, [Left, Right]}, Meta, []}, _Ann, S) when is_tuple(Left), is_atom(Right), is_list(Meta) ->
+translate({{'.', _, [Left, Right]}, Meta, []}, _Ann, S)
+  when is_tuple(Left) orelse Left =:= nil orelse is_boolean(Left), is_atom(Right), is_list(Meta) ->
   Ann = ?ann(Meta),
   {TLeft, SL} = translate(Left, Ann, S),
   TRight = {atom, Ann, Right},
@@ -232,22 +233,41 @@ translate({{'.', _, [Left, Right]}, Meta, []}, _Ann, S) when is_tuple(Left), is_
   Generated = erl_anno:set_generated(true, Ann),
   {Var, SV} = elixir_erl_var:build('_', SL),
   TVar = {var, Generated, Var},
-  TError = {tuple, Ann, [{atom, Ann, badkey}, TRight, TVar]},
 
-  {{'case', Generated, TLeft, [
-    {clause, Generated,
-      [{map, Ann, [{map_field_exact, Ann, TRight, TVar}]}],
-      [],
-      [TVar]},
-    {clause, Generated,
-      [TVar],
-      [[?remote(Generated, erlang, is_map, [TVar])]],
-      [?remote(Ann, erlang, error, [TError])]},
-    {clause, Generated,
-      [TVar],
-      [],
-      [{call, Generated, {remote, Generated, TVar, TRight}, []}]}
-  ]}, SV};
+  case proplists:get_value(no_parens, Meta, false) of
+    true ->
+      TError = {tuple, Ann, [{atom, Ann, badkey}, TRight, TVar]},
+      {{'case', Generated, TLeft, [
+        {clause, Generated,
+          [{map, Ann, [{map_field_exact, Ann, TRight, TVar}]}],
+          [],
+          [TVar]},
+        {clause, Generated,
+          [TVar],
+          [[
+            ?remote(Generated, erlang, is_atom, [TVar]),
+            {op, Generated, '=/=', TVar, {atom, Generated, nil}},
+            {op, Generated, '=/=', TVar, {atom, Generated, true}},
+            {op, Generated, '=/=', TVar, {atom, Generated, false}}
+          ]],
+          [{call, Generated, {remote, Generated, TVar, TRight}, []}]},
+        {clause, Generated,
+          [TVar],
+          [],
+          [?remote(Ann, erlang, error, [TError])]}
+      ]}, SV};
+    false ->
+      {{'case', Generated, TLeft, [
+        {clause, Generated,
+          [{map, Ann, [{map_field_exact, Ann, TRight, TVar}]}],
+          [],
+          [TVar]},
+        {clause, Generated,
+          [TVar],
+          [],
+          [{call, Generated, {remote, Generated, TVar, TRight}, []}]}
+      ]}, SV}
+    end;
 
 translate({{'.', _, [Left, Right]}, Meta, Args}, _Ann, S)
     when (is_tuple(Left) orelse is_atom(Left)), is_atom(Right), is_list(Meta), is_list(Args) ->
@@ -328,12 +348,6 @@ translate_block([H], Ann, Acc, S) ->
 translate_block([{'__block__', Meta, Args} | T], Ann, Acc, S) when is_list(Args) ->
   {TAcc, SA} = translate_block(Args, ?ann(Meta), Acc, S),
   translate_block(T, Ann, TAcc, SA);
-translate_block([{for, Meta, [_ | _] = Args} | T], Ann, Acc, S) ->
-  {TH, TS} = elixir_erl_for:translate(Meta, Args, false, S),
-  translate_block(T, Ann, [TH | Acc], TS);
-translate_block([{'=', _, [{'_', _, Ctx}, {for, Meta, [_ | _] = Args}]} | T], Ann, Acc, S) when is_atom(Ctx) ->
-  {TH, TS} = elixir_erl_for:translate(Meta, Args, false, S),
-  translate_block(T, Ann, [TH | Acc], TS);
 translate_block([H | T], Ann, Acc, S) ->
   {TH, TS} = translate(H, Ann, S),
   translate_block(T, Ann, [TH | Acc], TS).
@@ -392,18 +406,18 @@ translate_with_else(Meta, [], S) ->
   {VarName, SC} = elixir_erl_var:build('_', S),
   Var = {var, Generated, VarName},
   {{clause, Generated, [Var], [], [Var]}, SC};
-translate_with_else(Meta, [{else, [{'->', _, [[{Var, VarMeta, Kind}], Clause]}]}], S) when is_atom(Var), is_atom(Kind) ->
+translate_with_else(Meta, [{'else', [{'->', _, [[{Var, VarMeta, Kind}], Clause]}]}], S) when is_atom(Var), is_atom(Kind) ->
   Ann = ?ann(Meta),
   Generated = erl_anno:set_generated(true, Ann),
   {ElseVarErl, SV} = elixir_erl_var:translate(VarMeta, Var, Kind, S#elixir_erl{context=match}),
   {TranslatedClause, SC} = translate(Clause, Ann, SV#elixir_erl{context=nil}),
   {{clause, Generated, [ElseVarErl], [], [TranslatedClause]}, SC};
-translate_with_else(Meta, [{else, Else}], S) ->
+translate_with_else(Meta, [{'else', Else}], S) ->
   Generated = ?generated(Meta),
   {ElseVarEx, ElseVarErl, SE} = elixir_erl_var:assign(Generated, S),
   {RaiseVar, _, SV} = elixir_erl_var:assign(Generated, SE),
 
-  RaiseExpr = {{'.', Generated, [erlang, error]}, Generated, [{with_clause, RaiseVar}]},
+  RaiseExpr = {{'.', Generated, [erlang, error]}, Generated, [{else_clause, RaiseVar}]},
   RaiseClause = {'->', Generated, [[RaiseVar], RaiseExpr]},
   GeneratedElse = [build_generated_clause(Generated, ElseClause) || ElseClause <- Else],
 
@@ -546,7 +560,7 @@ extract_bit_type({'-', _, [L, R]}, Acc) ->
   extract_bit_type(L, extract_bit_type(R, Acc));
 extract_bit_type({unit, _, [Arg]}, Acc) ->
   [{unit, Arg} | Acc];
-extract_bit_type({Other, _, []}, Acc) ->
+extract_bit_type({Other, _, nil}, Acc) ->
   [Other | Acc].
 
 %% Optimizations that are specific to Erlang and change

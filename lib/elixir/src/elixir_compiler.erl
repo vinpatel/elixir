@@ -1,7 +1,6 @@
 %% Elixir compiler front-end to the Erlang backend.
 -module(elixir_compiler).
--export([string/3, quoted/3, bootstrap/0,
-         file/2, file_to_path/3, compile/3]).
+-export([string/3, quoted/3, bootstrap/0, file/2, compile/3]).
 -include("elixir.hrl").
 
 string(Contents, File, Callback) ->
@@ -21,25 +20,14 @@ quoted(Forms, File, Callback) ->
       fun (#{lexical_tracker := Pid}) -> Callback(File, Pid) end
     ),
 
-    unzip_reverse(get(elixir_module_binaries), [], [])
+    lists:reverse(get(elixir_module_binaries))
   after
     put(elixir_module_binaries, Previous)
   end.
 
-unzip_reverse([{Mod, Info} | Tail], Mods, Infos) ->
-  unzip_reverse(Tail, [Mod | Mods], [Info | Infos]);
-unzip_reverse([], Mods, Infos) ->
-  {Mods, Infos}.
-
 file(File, Callback) ->
   {ok, Bin} = file:read_file(File),
   string(elixir_utils:characters_to_list(Bin), File, Callback).
-
-file_to_path(File, Dest, Callback) when is_binary(File), is_binary(Dest) ->
-  file(File, fun(CallbackFile, CallbackLexical) ->
-    _ = [binary_to_path(Mod, Dest) || Mod <- get(elixir_module_binaries)],
-    Callback(CallbackFile, CallbackLexical)
-  end).
 
 %% Evaluates the given code through the Erlang compiler.
 %% It may end-up evaluating the code if it is deemed a
@@ -49,7 +37,8 @@ eval_or_compile(Forms, Args, E) ->
         (not elixir_config:is_bootstrap()) of
     true  -> fast_compile(Forms, E);
     false -> compile(Forms, Args, E)
-  end.
+  end,
+  ok.
 
 compile(Quoted, ArgsList, E) ->
   {Expanded, SE, EE} = elixir_expand:expand(Quoted, elixir_env:env_to_ex(E), E),
@@ -59,10 +48,10 @@ compile(Quoted, ArgsList, E) ->
     elixir_erl_compiler:spawn(fun() -> spawned_compile(Expanded, E) end),
 
   Args = list_to_tuple(ArgsList),
-  {dispatch(Module, Fun, Args, Purgeable), EE}.
+  {dispatch(Module, Fun, Args, Purgeable), SE, EE}.
 
 spawned_compile(ExExprs, #{line := Line, file := File} = E) ->
-  {Vars, S} = elixir_env:env_to_erl(E),
+  {Vars, S} = elixir_erl_var:from_env(E),
   {ErlExprs, _} = elixir_erl_pass:translate(ExExprs, erl_anno:new(Line), S),
 
   Module = retrieve_compiler_module(),
@@ -138,7 +127,7 @@ fast_compile({defmodule, Meta, [Mod, [{do, TailBlock}]]}, NoLineE) ->
   end,
 
   ContextModules = [Expanded | ?key(E, context_modules)],
-  elixir_module:compile(Expanded, Block, [], E#{context_modules := ContextModules}).
+  elixir_module:compile(Expanded, Block, [], false, E#{context_modules := ContextModules}).
 
 %% Bootstrapper
 
@@ -148,19 +137,19 @@ bootstrap() ->
   elixir_config:put(docs, false),
   elixir_config:put(relative_paths, false),
   elixir_config:put(ignore_module_conflict, true),
+  elixir_config:put(on_undefined_variable, raise),
   elixir_config:put(tracers, []),
   elixir_config:put(parser_options, []),
   {Init, Main} = bootstrap_files(),
   {ok, Cwd} = file:get_cwd(),
   Lib = filename:join(Cwd, "lib/elixir/lib"),
   [bootstrap_file(Lib, File) || File <- [<<"kernel.ex">> | Init]],
-  elixir_config:put(docs, true),
   [bootstrap_file(Lib, File) || File <- [<<"kernel.ex">> | Main]].
 
 bootstrap_file(Lib, Suffix) ->
   try
     File = filename:join(Lib, Suffix),
-    {Mods, _Infos} = file(File, fun(_, _) -> ok end),
+    Mods = file(File, fun(_, _) -> ok end),
     _ = [binary_to_path(X, "lib/elixir/ebin") || X <- Mods],
     io:format("Compiled ~ts~n", [Suffix])
   catch
@@ -172,13 +161,13 @@ bootstrap_file(Lib, Suffix) ->
 bootstrap_files() ->
   {
     [
+     <<"kernel/utils.ex">>,
      <<"macro/env.ex">>,
      <<"keyword.ex">>,
      <<"module.ex">>,
      <<"list.ex">>,
      <<"macro.ex">>,
      <<"kernel/typespec.ex">>,
-     <<"kernel/utils.ex">>,
      <<"code.ex">>,
      <<"code/identifier.ex">>,
      <<"protocol.ex">>,
@@ -194,6 +183,7 @@ bootstrap_files() ->
      <<"list/chars.ex">>,
      <<"module/locals_tracker.ex">>,
      <<"module/parallel_checker.ex">>,
+     <<"module/types/behaviour.ex">>,
      <<"module/types/helpers.ex">>,
      <<"module/types/unify.ex">>,
      <<"module/types/of.ex">>,

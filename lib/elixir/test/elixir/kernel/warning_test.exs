@@ -8,6 +8,21 @@ defmodule Kernel.WarningTest do
     capture_io(:stderr, fun)
   end
 
+  defmacro will_warn do
+    quote file: "demo" do
+      %{dup: 1, dup: 2}
+    end
+  end
+
+  test "warnings from macro" do
+    assert capture_err(fn ->
+             Code.eval_string("""
+             import Kernel.WarningTest
+             will_warn()
+             """)
+           end) =~ "key :dup will be overridden in map\n  demo:13"
+  end
+
   test "outdented heredoc" do
     output =
       capture_err(fn ->
@@ -27,18 +42,25 @@ defmodule Kernel.WarningTest do
   end
 
   describe "unicode identifier security" do
+    test "prevents Restricted codepoints in identifiers" do
+      exception = assert_raise SyntaxError, fn -> Code.string_to_quoted!("_shibㅤ = 1") end
+
+      assert Exception.message(exception) =~
+               "unexpected token: \"ㅤ\" (column 6, code point U+3164)"
+    end
+
     test "warns on confusables" do
-      assert capture_err(fn -> Code.string_to_quoted("аdmin=1; admin=1") end) =~
-               "confusable identifier: 'admin' looks like 'аdmin' on line 1"
+      assert capture_err(fn -> Code.string_to_quoted("а=1; a=1") end) =~
+               "confusable identifier: 'a' looks like 'а' on line 1"
 
-      assert capture_err(fn -> Code.string_to_quoted("[{:аdmin, 1}, {:admin, 1}]") end) =~
-               "confusable identifier: 'admin' looks like 'аdmin' on line 1"
+      assert capture_err(fn -> Code.string_to_quoted("[{:а, 1}, {:a, 1}]") end) =~
+               "confusable identifier: 'a' looks like 'а' on line 1"
 
-      assert capture_err(fn -> Code.string_to_quoted("[аdmin: 1, admin: 1]") end) =~
-               "confusable identifier: 'admin' looks like 'аdmin' on line 1"
+      assert capture_err(fn -> Code.string_to_quoted("[а: 1, a: 1]") end) =~
+               "confusable identifier: 'a' looks like 'а' on line 1"
 
-      assert capture_err(fn -> Code.string_to_quoted("quote do: [аdmin(1), admin(1)]") end) =~
-               "confusable identifier: 'admin' looks like 'аdmin' on line 1"
+      assert capture_err(fn -> Code.string_to_quoted("quote do: [а(1), a(1)]") end) =~
+               "confusable identifier: 'a' looks like 'а' on line 1"
 
       assert capture_err(fn -> Code.string_to_quoted("力=1; カ=1") end) =~
                "confusable identifier: 'カ' looks like '力' on line 1"
@@ -49,11 +71,60 @@ defmodule Kernel.WarningTest do
 
       # works with a custom atom encoder
       assert capture_err(fn ->
-               Code.string_to_quoted("[{:аdmin, 1}, {:admin, 1}]",
+               Code.string_to_quoted("[{:а, 1}, {:a, 1}]",
                  static_atoms_encoder: fn token, _ -> {:ok, {:wrapped, token}} end
                )
              end) =~
-               "confusable identifier: 'admin' looks like 'аdmin' on line 1"
+               "confusable identifier: 'a' looks like 'а' on line 1"
+    end
+
+    test "prevents unsafe script mixing in identifiers" do
+      exception =
+        assert_raise SyntaxError, fn ->
+          Code.string_to_quoted!("if аdmin_, do: :ok, else: :err")
+        end
+
+      assert Exception.message(exception) =~
+               "nofile:1:9: invalid mixed-script identifier found: аdmin"
+
+      assert Exception.message(exception) =~ """
+               \\u0430 а {Cyrillic}
+               \\u0064 d {Latin}
+               \\u006D m {Latin}
+               \\u0069 i {Latin}
+               \\u006E n {Latin}
+               \\u005F _
+             """
+
+      # includes suggestion about what to change
+      assert Exception.message(exception) =~ """
+             Hint: You could write the above in a similar way that is accepted by Elixir:
+
+                 "admin_" (code points 0x00061 0x00064 0x0006D 0x00069 0x0006E 0x0005F)
+             """
+
+      # a is in cyrillic
+      assert_raise SyntaxError, ~r/mixed/, fn -> Code.string_to_quoted!("[аdmin: 1]") end
+      assert_raise SyntaxError, ~r/mixed/, fn -> Code.string_to_quoted!("[{:аdmin, 1}]") end
+      assert_raise SyntaxError, ~r/mixed/, fn -> Code.string_to_quoted!("quote do: аdmin(1)") end
+      assert_raise SyntaxError, ~r/mixed/, fn -> Code.string_to_quoted!("рос_api = 1") end
+
+      # T is in cyrillic
+      assert_raise SyntaxError, ~r/mixed/, fn -> Code.string_to_quoted!("[Тシャツ: 1]") end
+    end
+
+    test "allows legitimate script mixing" do
+      # writing systems that legitimately mix multiple scripts, and Common chars like _
+      assert capture_err(fn -> Code.eval_string("幻ㄒㄧㄤ = 1") end) == ""
+      assert capture_err(fn -> Code.eval_string("幻ㄒㄧㄤ1 = 1") end) == ""
+      assert capture_err(fn -> Code.eval_string("__सवव_1? = 1") end) == ""
+
+      # uts39 5.2 allowed 'highly restrictive' script mixing, like 't-shirt' in Jpan:
+      assert capture_err(fn -> Code.string_to_quoted!(":Tシャツ") end) == ""
+
+      # elixir's normalizations combine scriptsets of the 'from' and 'to' characters,
+      # ex: {Common} MICRO => {Greek} MU == {Common, Greek}; Common intersects w/all
+      assert capture_err(fn -> Code.string_to_quoted!("μs") end) == ""
     end
   end
 
@@ -81,6 +152,7 @@ defmodule Kernel.WarningTest do
       assert capture_err(fn -> Code.eval_string(~s/:"Foo"/) end) == ""
       assert capture_err(fn -> Code.eval_string(~s/:"foo@bar"/) end) == ""
       assert capture_err(fn -> Code.eval_string(~s/:"héllò"/) end) == ""
+      assert capture_err(fn -> Code.eval_string(~s/:"3L1X1R"/) end) == ""
     end
 
     test "warns for unnecessary quotes" do
@@ -169,113 +241,73 @@ defmodule Kernel.WarningTest do
   end
 
   test "nested unused variable" do
-    message = "variable \"x\" is unused"
+    messages = ["undefined variable \"x\"", "variable \"x\" is unused"]
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               case false do
-                 true -> x = 1
-                 _ -> 1
-               end
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    case false do
+      true -> x = 1
+      _ -> 1
+    end
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               false and (x = 1)
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    false and (x = 1)
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               true or (x = 1)
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    true or (x = 1)
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               if false do
-                 x = 1
-               end
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    if false do
+      x = 1
+    end
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               cond do
-                 false -> x = 1
-                 true -> 1
-               end
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    cond do
+      false -> x = 1
+      true -> 1
+    end
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               receive do
-                 :foo -> x = 1
-               after
-                 0 -> 1
-               end
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    receive do
+      :foo -> x = 1
+    after
+      0 -> 1
+    end
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               false && (x = 1)
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    false && (x = 1)
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               true || (x = 1)
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    true || (x = 1)
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               with true <- true do
-                 x = false
-               end
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    with true <- true do
+      x = false
+    end
+    x
+    """)
 
-    assert capture_err(fn ->
-             assert_raise CompileError, ~r/undefined function x/, fn ->
-               Code.eval_string("""
-               fn ->
-                 x = true
-               end
-               x
-               """)
-             end
-           end) =~ message
+    assert_compile_error(messages, """
+    fn ->
+      x = true
+    end
+    x
+    """)
   end
 
   test "unused variable in redefined function in different file" do
@@ -597,6 +629,14 @@ defmodule Kernel.WarningTest do
     purge(Sample)
   end
 
+  test "unknown import" do
+    assert capture_err(fn ->
+             Code.compile_string("""
+             import(Kernel, only: [invalid: 1])
+             """)
+           end) =~ "cannot import Kernel.invalid/1 because it is undefined or private"
+  end
+
   test "unused import of one of the functions in :only" do
     output =
       capture_err(fn ->
@@ -625,6 +665,24 @@ defmodule Kernel.WarningTest do
            end) =~ "unused import String\n"
   after
     purge(Sample)
+  end
+
+  test "duplicated function on import options" do
+    assert capture_err(fn ->
+             Code.compile_string("""
+             defmodule Kernel.WarningsTest.DuplicatedFunctionOnImportOnly do
+               import List, only: [wrap: 1, keyfind: 3, wrap: 1]
+             end
+             """)
+           end) =~ "invalid :only option for import, wrap/1 is duplicated\n"
+
+    assert capture_err(fn ->
+             Code.compile_string("""
+             defmodule Kernel.WarningsTest.DuplicatedFunctionOnImportExcept do
+               import List, except: [wrap: 1, keyfind: 3, wrap: 1]
+             end
+             """)
+           end) =~ "invalid :except option for import, wrap/1 is duplicated"
   end
 
   test "unused alias" do
@@ -924,7 +982,7 @@ defmodule Kernel.WarningTest do
              end
              """)
            end) =~
-             "the @foo() notation (with parenthesis) is deprecated, please use @foo (without parenthesis) instead"
+             "the @foo() notation (with parentheses) is deprecated, please use @foo (without parentheses) instead"
   after
     purge(Sample)
   end
@@ -1010,15 +1068,6 @@ defmodule Kernel.WarningTest do
     purge(Sample)
   end
 
-  # TODO: Simplify when we require Erlang/OTP 24
-  if System.otp_release() >= "24" do
-    @argument_error_message "the call to Atom.to_string/1"
-    @arithmetic_error_message "the call to +/2"
-  else
-    @argument_error_message "this expression"
-    @arithmetic_error_message "this expression"
-  end
-
   test "eval failure warning" do
     assert capture_err(fn ->
              Code.eval_string("""
@@ -1026,7 +1075,7 @@ defmodule Kernel.WarningTest do
                def foo, do: Atom.to_string "abc"
              end
              """)
-           end) =~ "#{@argument_error_message} will fail with ArgumentError\n  nofile:2"
+           end) =~ "the call to Atom.to_string/1 will fail with ArgumentError\n  nofile:2"
 
     assert capture_err(fn ->
              Code.eval_string("""
@@ -1034,7 +1083,7 @@ defmodule Kernel.WarningTest do
                def foo, do: 1 + nil
              end
              """)
-           end) =~ "#{@arithmetic_error_message} will fail with ArithmeticError\n  nofile:2"
+           end) =~ "the call to +/2 will fail with ArithmeticError\n  nofile:2"
   after
     purge([Sample1, Sample2])
   end
@@ -1158,18 +1207,6 @@ defmodule Kernel.WarningTest do
     purge(EmptyBehaviour)
   end
 
-  test "undefined behavior" do
-    assert capture_err(fn ->
-             Code.eval_string("""
-             defmodule Sample do
-               @behavior Hello
-             end
-             """)
-           end) =~ "@behavior attribute is not supported, please use @behaviour instead"
-  after
-    purge(Sample)
-  end
-
   test "undefined function for protocol" do
     assert capture_err(fn ->
              Code.eval_string("""
@@ -1184,66 +1221,6 @@ defmodule Kernel.WarningTest do
              "function foo/1 required by protocol Sample1 is not implemented (in module Sample1.Atom)"
   after
     purge([Sample1, Sample1.Atom])
-  end
-
-  test "warn when callbacks and friends are defined inside a protocol" do
-    message =
-      capture_err(fn ->
-        Code.eval_string(~S"""
-          defprotocol SampleWithCallbacks do
-            @spec with_specs(any(), keyword()) :: tuple()
-            def with_specs(term, options \\ [])
-
-            @spec with_specs_and_when(any(), opts) :: tuple() when opts: keyword
-            def with_specs_and_when(term, options \\ [])
-
-            def without_specs(term, options \\ [])
-
-            @callback foo :: {:ok, term}
-            @callback foo(term) :: {:ok, term}
-            @callback foo(term, keyword) :: {:ok, term, keyword}
-
-            @callback foo_when :: {:ok, x} when x: term
-            @callback foo_when(x) :: {:ok, x} when x: term
-            @callback foo_when(x, opts) :: {:ok, x, opts} when x: term, opts: keyword
-
-            @macrocallback bar(term) :: {:ok, term}
-            @macrocallback bar(term, keyword) :: {:ok, term, keyword}
-
-            @optional_callbacks [foo: 1, foo: 2]
-            @optional_callbacks [without_specs: 2]
-          end
-        """)
-      end)
-
-    assert message =~
-             "cannot define @callback foo/0 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @callback foo/1 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @callback foo/2 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @callback foo_when/0 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @callback foo_when/1 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @callback foo_when/2 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @macrocallback bar/1 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @macrocallback bar/2 inside protocol, use def/1 to outline your protocol definition\n  nofile:1"
-
-    assert message =~
-             "cannot define @optional_callbacks inside protocol, all of the protocol definitions are required\n  nofile:1"
-  after
-    purge([SampleWithCallbacks])
   end
 
   test "overridden def name" do
@@ -1540,70 +1517,56 @@ defmodule Kernel.WarningTest do
 
       assert capture_err(fn ->
                Code.eval_string("""
-               defmodule Sample do
+               defmodule Sample1 do
                  @type my_type :: ann_type :: nested_ann_type :: atom
                end
                """)
              end) =~ message
 
-      purge(Sample)
+      purge(Sample1)
 
       assert capture_err(fn ->
                Code.eval_string("""
-               defmodule Sample do
+               defmodule Sample2 do
                  @type my_type :: ann_type :: nested_ann_type :: atom | port
                end
                """)
              end) =~ message
 
-      purge(Sample)
+      purge(Sample2)
 
       assert capture_err(fn ->
                Code.eval_string("""
-               defmodule Sample do
+               defmodule Sample3 do
                  @spec foo :: {pid, ann_type :: nested_ann_type :: atom}
                  def foo, do: nil
                end
                """)
              end) =~ message
     after
-      purge(Sample)
+      purge([Sample1, Sample2, Sample3])
     end
 
     test "invalid type annotations" do
-      message =
-        "invalid type annotation. When using the | operator to represent the union of types, " <>
-          "make sure to wrap type annotations in parentheses"
+      assert capture_err(fn ->
+               Code.eval_string("""
+               defmodule Sample1 do
+                 @type my_type :: (pid() :: atom)
+               end
+               """)
+             end) =~ "invalid type annotation. The left side of :: must be a variable, got: pid()"
 
       assert capture_err(fn ->
                Code.eval_string("""
-               defmodule Sample do
+               defmodule Sample2 do
                  @type my_type :: pid | ann_type :: atom
                end
                """)
-             end) =~ message
-
-      purge(Sample)
-
-      assert capture_err(fn ->
-               Code.eval_string("""
-               defmodule Sample do
-                 @type my_type :: pid | ann_type :: atom | port
-               end
-               """)
-             end) =~ message
-
-      purge(Sample)
-
-      assert capture_err(fn ->
-               Code.eval_string("""
-               defmodule Sample do
-                 @type my_type :: {port, pid | ann_type :: atom | port}
-               end
-               """)
-             end) =~ message
+             end) =~
+               "invalid type annotation. The left side of :: must be a variable, got: pid | ann_type. " <>
+                 "Note \"left | right :: ann\" is the same as \"(left | right) :: ann\""
     after
-      purge(Sample)
+      purge([Sample1, Sample2])
     end
   end
 
@@ -1674,7 +1637,19 @@ defmodule Kernel.WarningTest do
            end) =~ "parentheses are required when piping into a function call"
   end
 
-  test "variable is being expanded to function call" do
+  test "keywords without explicit parentheses" do
+    assert capture_err(fn ->
+             Code.eval_string("""
+             quote do
+               IO.inspect arg, label: if true, do: "foo", else: "baz"
+             end
+             """)
+           end) =~ "missing parentheses for expression following \"label:\" keyword. "
+  end
+
+  test "variable is being expanded to function call (on_undefined_variable: warn)" do
+    Code.put_compiler_option(:on_undefined_variable, :warn)
+
     output =
       capture_err(fn ->
         Code.eval_string("""
@@ -1688,6 +1663,7 @@ defmodule Kernel.WarningTest do
     assert output =~ "variable \"self\" does not exist and is being expanded to \"self()\""
     assert output =~ "variable \"node\" does not exist and is being expanded to \"node()\""
   after
+    Code.put_compiler_option(:on_undefined_variable, :raise)
     purge(Sample)
   end
 
@@ -1976,6 +1952,17 @@ defmodule Kernel.WarningTest do
              """)
            end) =~
              "extra parentheses on a remote function capture &System.pid()/0 have been deprecated. Please remove the parentheses: &System.pid/0"
+  end
+
+  defp assert_compile_error(messages, string) do
+    captured =
+      capture_err(fn ->
+        assert_raise CompileError, fn -> Code.eval_string(string) end
+      end)
+
+    for message <- List.wrap(messages) do
+      assert captured =~ message
+    end
   end
 
   defp purge(list) when is_list(list) do

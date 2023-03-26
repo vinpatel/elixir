@@ -46,7 +46,8 @@ defmodule System do
       mode](https://www.erlang.org/doc/apps/erts/time_correction.html#Time_Warp_Modes);
 
     * `monotonic_time/0` - a monotonically increasing time provided
-      by the Erlang VM.
+      by the Erlang VM. This is not strictly monotonically increasing. Multiple
+      sequential calls of the function may return the same value.
 
   The time functions in this module work in the `:native` unit
   (unless specified otherwise), which is operating system dependent. Most of
@@ -61,6 +62,15 @@ defmodule System do
   correction](https://www.erlang.org/doc/apps/erts/time_correction.html)
   in the Erlang docs.
   """
+
+  defmodule EnvError do
+    defexception [:env]
+
+    @impl true
+    def message(%{env: env}) do
+      "could not fetch environment variable #{inspect(env)} because it is not set"
+    end
+  end
 
   @typedoc """
   The time unit to be passed to functions like `monotonic_time/1` and others.
@@ -132,11 +142,11 @@ defmodule System do
   defmacrop get_revision do
     null =
       case :os.type() do
-        {:win32, _} -> 'NUL'
-        _ -> '/dev/null'
+        {:win32, _} -> ~c"NUL"
+        _ -> ~c"/dev/null"
       end
 
-    'git rev-parse --short=7 HEAD 2> '
+    ~c"git rev-parse --short=7 HEAD 2> "
     |> Kernel.++(null)
     |> :os.cmd()
     |> strip
@@ -148,7 +158,7 @@ defmodule System do
   # Follows https://reproducible-builds.org/specs/source-date-epoch/
   defmacrop get_date do
     unix_epoch =
-      if source_date_epoch = :os.getenv('SOURCE_DATE_EPOCH') do
+      if source_date_epoch = :os.getenv(~c"SOURCE_DATE_EPOCH") do
         try do
           List.to_integer(source_date_epoch)
         rescue
@@ -290,6 +300,22 @@ defmodule System do
   end
 
   @doc """
+  Waits until the system boots.
+
+  Calling this function blocks until all of ARGV is processed.
+  Inside a release, this means the boot script and then ARGV
+  have been processed. This is only useful for those implementing
+  custom shells/consoles on top of Elixir.
+
+  However, be careful to not invoke this command from within
+  the process that is processing the command line arguments,
+  as doing so would lead to a deadlock.
+  """
+  @doc since: "1.15.0"
+  @spec wait_until_booted() :: :ok
+  defdelegate wait_until_booted(), to: :elixir_config
+
+  @doc """
   Current working directory.
 
   Returns the current working directory or `nil` if one
@@ -365,8 +391,8 @@ defmodule System do
   """
   @spec tmp_dir() :: String.t() | nil
   def tmp_dir do
-    write_env_tmp_dir('TMPDIR') || write_env_tmp_dir('TEMP') || write_env_tmp_dir('TMP') ||
-      write_tmp_dir('/tmp') || write_cwd_tmp_dir()
+    write_env_tmp_dir(~c"TMPDIR") || write_env_tmp_dir(~c"TEMP") || write_env_tmp_dir(~c"TMP") ||
+      write_tmp_dir(~c"/tmp") || write_cwd_tmp_dir()
   end
 
   defp write_cwd_tmp_dir do
@@ -463,8 +489,10 @@ defmodule System do
   @doc """
   Traps the given `signal` to execute the `fun`.
 
-  > **Important**: Trapping signals may have strong implications
-  > on how a system shuts down and behave in production and
+  > #### Avoid setting traps in libraries {: .warning}
+  >
+  > Trapping signals may have strong implications
+  > on how a system shuts down and behaves in production and
   > therefore it is extremely discouraged for libraries to
   > set their own traps. Instead, they should redirect users
   > to configure them themselves. The only cases where it is
@@ -519,8 +547,8 @@ defmodule System do
   it may disable Elixir traps (or Elixir may override your configuration).
   """
   @doc since: "1.12.0"
-  @spec trap_signal(signal, (() -> :ok)) :: {:ok, reference()} | {:error, :not_sup}
-  @spec trap_signal(signal, id, (() -> :ok)) ::
+  @spec trap_signal(signal, (-> :ok)) :: {:ok, reference()} | {:error, :not_sup}
+  @spec trap_signal(signal, id, (-> :ok)) ::
           {:ok, id} | {:error, :already_registered} | {:error, :not_sup}
         when id: term()
   def trap_signal(signal, id \\ make_ref(), fun)
@@ -597,9 +625,6 @@ defmodule System do
     end
   end
 
-  # TODO: Remove this once we require Erlang/OTP 24+
-  @compile {:no_warn_undefined, {:os, :env, 0}}
-
   @doc """
   Returns all system environment variables.
 
@@ -608,17 +633,9 @@ defmodule System do
   """
   @spec get_env() :: %{optional(String.t()) => String.t()}
   def get_env do
-    if function_exported?(:os, :env, 0) do
-      Map.new(:os.env(), fn {k, v} ->
-        {IO.chardata_to_string(k), IO.chardata_to_string(v)}
-      end)
-    else
-      Enum.into(:os.getenv(), %{}, fn var ->
-        var = IO.chardata_to_string(var)
-        [k, v] = String.split(var, "=", parts: 2)
-        {k, v}
-      end)
-    end
+    Map.new(:os.env(), fn {k, v} ->
+      {IO.chardata_to_string(k), IO.chardata_to_string(v)}
+    end)
   end
 
   @doc """
@@ -642,7 +659,8 @@ defmodule System do
 
   """
   @doc since: "1.9.0"
-  @spec get_env(String.t(), String.t() | nil) :: String.t() | nil
+  @spec get_env(String.t(), String.t()) :: String.t()
+  @spec get_env(String.t(), nil) :: String.t() | nil
   def get_env(varname, default \\ nil)
       when is_binary(varname) and
              (is_binary(default) or is_nil(default)) do
@@ -688,15 +706,13 @@ defmodule System do
       "4000"
 
       iex> System.fetch_env!("NOT_SET")
-      ** (ArgumentError) could not fetch environment variable "NOT_SET" because it is not set
+      ** (System.EnvError) could not fetch environment variable "NOT_SET" because it is not set
 
   """
   @doc since: "1.9.0"
   @spec fetch_env!(String.t()) :: String.t()
   def fetch_env!(varname) when is_binary(varname) do
-    get_env(varname) ||
-      raise ArgumentError,
-            "could not fetch environment variable #{inspect(varname)} because it is not set"
+    get_env(varname) || raise(EnvError, env: varname)
   end
 
   @doc """
@@ -733,11 +749,28 @@ defmodule System do
   Sets multiple environment variables.
 
   Sets a new value for each environment variable corresponding
-  to each `{key, value}` pair in `enum`.
+  to each `{key, value}` pair in `enum`. Keys are automatically
+  converted to strings, values are sent as is. `nil` values erase
+  the given keys.
   """
   @spec put_env(Enumerable.t()) :: :ok
   def put_env(enum) do
-    Enum.each(enum, fn {key, val} -> put_env(key, val) end)
+    Enum.each(enum, fn
+      {key, nil} ->
+        :os.unsetenv(to_charlist(key))
+
+      {key, val} ->
+        key = to_charlist(key)
+
+        case :string.find(key, "=") do
+          :nomatch ->
+            :os.putenv(key, to_charlist(val))
+
+          _ ->
+            raise ArgumentError,
+                  "cannot execute System.put_env/1 for key with \"=\", got: #{inspect(key)}"
+        end
+    end)
   end
 
   @doc """
@@ -838,7 +871,7 @@ defmodule System do
   defdelegate restart(), to: :init
 
   @doc """
-  Carefully stops the Erlang runtime system.
+  Asynchronously and carefully stops the Erlang runtime system.
 
   All applications are taken down smoothly, all code is unloaded, and all ports
   are closed before the system terminates by calling `halt/1`.
@@ -846,13 +879,16 @@ defmodule System do
   `status` must be a non-negative integer or a binary.
 
     * If an integer, the runtime system exits with the integer value which is
-      returned to the operating system.
+      returned to the operating system. On many platforms, only the status codes
+      0-255 are supported by the operating system.
 
     * If a binary, an Erlang crash dump is produced with status as slogan, and
       then the runtime system exits with status code 1.
 
-  Note that on many platforms, only the status codes 0-255 are supported
-  by the operating system.
+  Note this function is asynchronous and the current process will continue
+  executing after this function is invoked. In case you want to block the
+  current process until the system effectively shuts down, you can invoke
+  `Process.sleep(:infinity)`.
 
   ## Examples
 
@@ -861,7 +897,7 @@ defmodule System do
 
   """
   @doc since: "1.5.0"
-  @spec stop(non_neg_integer | binary) :: no_return
+  @spec stop(non_neg_integer | binary) :: :ok
   def stop(status \\ 0)
 
   def stop(status) when is_integer(status) do
@@ -877,7 +913,9 @@ defmodule System do
 
   It uses `sh` for Unix-like systems and `cmd` for Windows.
 
-  > **Important:**: Use this function with care. In particular, **never
+  > #### Watch out {: .warning}
+  >
+  > Use this function with care. In particular, **never
   > pass untrusted user input to this function**, as the user would be
   > able to perform "command injection attacks" by executing any code
   > directly on the machine. Generally speaking, prefer to use `cmd/3`
@@ -896,36 +934,40 @@ defmodule System do
 
   ## Options
 
-  It accepts the same options as `cmd/3`, except for `arg0`.
+  It accepts the same options as `cmd/3` (except for `arg0`).
+  It also accepts the following exclusive options:
+
+    * `:close_stdin` (since v1.14.1) - if the stdin should be closed
+      on Unix systems, forcing any command that waits on stdin to
+      immediately terminate. Defaults to false.
   """
   @doc since: "1.12.0"
   @spec shell(binary, keyword) :: {Collectable.t(), exit_status :: non_neg_integer}
   def shell(command, opts \\ []) when is_binary(command) do
     assert_no_null_byte!(command, "System.shell/2")
+    {close_stdin?, opts} = Keyword.pop(opts, :close_stdin, false)
 
     # Finding shell command logic from :os.cmd in OTP
     # https://github.com/erlang/otp/blob/8deb96fb1d017307e22d2ab88968b9ef9f1b71d0/lib/kernel/src/os.erl#L184
-    command =
-      case :os.type() do
-        {:unix, _} ->
-          command =
-            command
-            |> String.replace("\"", "\\\"")
-            |> String.to_charlist()
+    case :os.type() do
+      {:unix, _} ->
+        shell_path = :os.find_executable(~c"sh") || :erlang.error(:enoent, [command, opts])
+        close_stdin = if close_stdin?, do: " </dev/null", else: ""
+        command = IO.iodata_to_binary(["(", command, "\n)", close_stdin])
+        do_cmd({:spawn_executable, shell_path}, [args: ["-c", command]], opts)
 
-          'sh -c "' ++ command ++ '"'
+      {:win32, osname} ->
+        command = String.to_charlist(command)
 
-        {:win32, osname} ->
-          command = String.to_charlist(command)
-
+        command =
           case {System.get_env("COMSPEC"), osname} do
-            {nil, :windows} -> 'command.com /s /c ' ++ command
-            {nil, _} -> 'cmd /s /c ' ++ command
-            {cmd, _} -> '#{cmd} /s /c ' ++ command
+            {nil, :windows} -> ~c"command.com /s /c " ++ command
+            {nil, _} -> ~c"cmd /s /c " ++ command
+            {cmd, _} -> ~c"#{cmd} /s /c " ++ command
           end
-      end
 
-    do_cmd({:spawn, command}, [], opts)
+        do_cmd({:spawn, command}, [], opts)
+    end
   end
 
   @doc ~S"""
@@ -966,23 +1008,39 @@ defmodule System do
       hello
       {%IO.Stream{}, 0}
 
+  If you want to read lines:
+
+      iex> System.cmd("echo", ["hello\nworld"], into: [], lines: 1024)
+      {["hello", "world"], 0}
+
   ## Options
 
     * `:into` - injects the result into the given collectable, defaults to `""`
+
+    * `:lines` - (since v1.15.0) reads the output by lines instead of in bytes. It expects a
+      number of maximum bytes to buffer internally (1024 is a reasonable default).
+      The collectable will be called with each finished line (regardless of buffer
+      size) and without the EOL character
+
     * `:cd` - the directory to run the command in
+
     * `:env` - an enumerable of tuples containing environment key-value as
       binary. The child process inherits all environment variables from its
       parent process, the Elixir application, except those overwritten or
       cleared using this option. Specify a value of `nil` to clear (unset) an
       environment variable, which is useful for preventing credentials passed
-      to the application from leaking into child processes.
+      to the application from leaking into child processes
+
     * `:arg0` - sets the command arg0
+
     * `:stderr_to_stdout` - redirects stderr to stdout when `true`
+
     * `:parallelism` - when `true`, the VM will schedule port tasks to improve
       parallelism in the system. If set to `false`, the VM will try to perform
       commands immediately, improving latency at the expense of parallelism.
-      The default can be set on system startup by passing the "+spp" argument
-      to `--erl`.
+      The default is `false`, and can be set on system startup by passing the 
+      [`+spp`](https://www.erlang.org/doc/man/erl.html#+spp) flag to `--erl`. 
+      Use `:erlang.system_info(:port_parallelism)` to check if enabled.
 
   ## Error reasons
 
@@ -1036,11 +1094,16 @@ defmodule System do
   end
 
   defp do_cmd(port_init, base_opts, opts) do
-    {into, opts} = cmd_opts(opts, [:use_stdio, :exit_status, :binary, :hide] ++ base_opts, "")
+    {into, line, opts} =
+      cmd_opts(opts, [:use_stdio, :exit_status, :binary, :hide] ++ base_opts, "", false)
+
     {initial, fun} = Collectable.into(into)
 
     try do
-      do_port(Port.open(port_init, opts), initial, fun)
+      case line do
+        true -> do_port_line(Port.open(port_init, opts), initial, fun, [])
+        false -> do_port_byte(Port.open(port_init, opts), initial, fun)
+      end
     catch
       kind, reason ->
         fun.(initial, :halt)
@@ -1050,42 +1113,67 @@ defmodule System do
     end
   end
 
-  defp do_port(port, acc, fun) do
+  defp do_port_byte(port, acc, fun) do
     receive do
       {^port, {:data, data}} ->
-        do_port(port, fun.(acc, {:cont, data}), fun)
+        do_port_byte(port, fun.(acc, {:cont, data}), fun)
 
       {^port, {:exit_status, status}} ->
         {acc, status}
     end
   end
 
-  defp cmd_opts([{:into, any} | t], opts, _into),
-    do: cmd_opts(t, opts, any)
+  defp do_port_line(port, acc, fun, buffer) do
+    receive do
+      {^port, {:data, {:noeol, data}}} ->
+        do_port_line(port, acc, fun, [data | buffer])
 
-  defp cmd_opts([{:cd, bin} | t], opts, into) when is_binary(bin),
-    do: cmd_opts(t, [{:cd, bin} | opts], into)
+      {^port, {:data, {:eol, data}}} ->
+        data = [data | buffer] |> Enum.reverse() |> IO.iodata_to_binary()
+        do_port_line(port, fun.(acc, {:cont, data}), fun, [])
 
-  defp cmd_opts([{:arg0, bin} | t], opts, into) when is_binary(bin),
-    do: cmd_opts(t, [{:arg0, bin} | opts], into)
+      {^port, {:exit_status, status}} ->
+        # Data may arrive after exit status on line mode
+        receive do
+          {^port, {:data, {_, data}}} ->
+            data = [data | buffer] |> Enum.reverse() |> IO.iodata_to_binary()
+            {fun.(acc, {:cont, data}), status}
+        after
+          0 -> {acc, status}
+        end
+    end
+  end
 
-  defp cmd_opts([{:stderr_to_stdout, true} | t], opts, into),
-    do: cmd_opts(t, [:stderr_to_stdout | opts], into)
+  defp cmd_opts([{:into, any} | t], opts, _into, line),
+    do: cmd_opts(t, opts, any, line)
 
-  defp cmd_opts([{:stderr_to_stdout, false} | t], opts, into),
-    do: cmd_opts(t, opts, into)
+  defp cmd_opts([{:cd, bin} | t], opts, into, line) when is_binary(bin),
+    do: cmd_opts(t, [{:cd, bin} | opts], into, line)
 
-  defp cmd_opts([{:parallelism, bool} | t], opts, into) when is_boolean(bool),
-    do: cmd_opts(t, [{:parallelism, bool} | opts], into)
+  defp cmd_opts([{:arg0, bin} | t], opts, into, line) when is_binary(bin),
+    do: cmd_opts(t, [{:arg0, bin} | opts], into, line)
 
-  defp cmd_opts([{:env, enum} | t], opts, into),
-    do: cmd_opts(t, [{:env, validate_env(enum)} | opts], into)
+  defp cmd_opts([{:stderr_to_stdout, true} | t], opts, into, line),
+    do: cmd_opts(t, [:stderr_to_stdout | opts], into, line)
 
-  defp cmd_opts([{key, val} | _], _opts, _into),
+  defp cmd_opts([{:stderr_to_stdout, false} | t], opts, into, line),
+    do: cmd_opts(t, opts, into, line)
+
+  defp cmd_opts([{:parallelism, bool} | t], opts, into, line) when is_boolean(bool),
+    do: cmd_opts(t, [{:parallelism, bool} | opts], into, line)
+
+  defp cmd_opts([{:env, enum} | t], opts, into, line),
+    do: cmd_opts(t, [{:env, validate_env(enum)} | opts], into, line)
+
+  defp cmd_opts([{:lines, max_line_length} | t], opts, into, _line)
+       when is_integer(max_line_length) and max_line_length > 0,
+       do: cmd_opts(t, [{:line, max_line_length} | opts], into, true)
+
+  defp cmd_opts([{key, val} | _], _opts, _into, _line),
     do: raise(ArgumentError, "invalid option #{inspect(key)} with value #{inspect(val)}")
 
-  defp cmd_opts([], opts, into),
-    do: {into, opts}
+  defp cmd_opts([], opts, into, line),
+    do: {into, line, opts}
 
   defp validate_env(enum) do
     Enum.map(enum, fn
@@ -1104,7 +1192,8 @@ defmodule System do
   Returns the current monotonic time in the `:native` time unit.
 
   This time is monotonically increasing and starts in an unspecified
-  point in time.
+  point in time. This is not strictly monotonically increasing. Multiple
+  sequential calls of the function may return the same value.
 
   Inlined by the compiler.
   """

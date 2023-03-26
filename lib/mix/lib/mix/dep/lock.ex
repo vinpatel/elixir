@@ -9,9 +9,8 @@ defmodule Mix.Dep.Lock do
   Reads the lockfile, returns a map containing
   each app name and its current lock information.
   """
-  @spec read() :: map
-  def read() do
-    lockfile = lockfile()
+  @spec read(Path.t()) :: map()
+  def read(lockfile \\ lockfile()) do
     opts = [file: lockfile, warn_on_unnecessary_quotes: false]
 
     with {:ok, contents} <- File.read(lockfile),
@@ -27,15 +26,23 @@ defmodule Mix.Dep.Lock do
   @doc """
   Receives a map and writes it as the latest lock.
   """
-  @spec write(map) :: :ok
-  def write(map) do
+  @spec write(map(), keyword) :: :ok
+  def write(map, opts \\ []) do
+    lockfile = opts[:file] || lockfile()
+
     unless map == read() do
+      if Keyword.get(opts, :check_locked, false) do
+        Mix.raise(
+          "Your #{lockfile} is out of date and must be updated without the --check-locked flag"
+        )
+      end
+
       lines =
         for {app, rev} <- Enum.sort(map), rev != nil do
           ~s(  "#{app}": #{inspect(rev, limit: :infinity)},\n)
         end
 
-      File.write!(lockfile(), ["%{\n", lines, "}\n"])
+      File.write!(lockfile, ["%{\n", lines, "}\n"])
       Mix.Task.run("will_recompile")
     end
 

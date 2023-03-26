@@ -327,6 +327,8 @@ defmodule Mix.Utils do
 
   The callback will be invoked for each node and it
   must return a `{printed, children}` tuple.
+
+  If `path` is `-`, prints the output to standard output.
   """
   @spec write_dot_graph!(
           Path.t(),
@@ -338,7 +340,13 @@ defmodule Mix.Utils do
         when node: term()
   def write_dot_graph!(path, title, nodes, callback, _opts \\ []) do
     {dot, _} = build_dot_graph(make_ref(), nodes, MapSet.new(), callback)
-    File.write!(path, ["digraph ", quoted(title), " {\n", dot, "}\n"])
+    contents = ["digraph ", quoted(title), " {\n", dot, "}\n"]
+
+    if path == "-" do
+      IO.write(contents)
+    else
+      File.write!(path, contents)
+    end
   end
 
   defp build_dot_graph(_parent, [], seen, _callback), do: {[], seen}
@@ -435,9 +443,7 @@ defmodule Mix.Utils do
     |> Enum.map_join(".", &Macro.camelize/1)
   end
 
-  @doc """
-  Symlinks or copy with the option to force a hard copy.
-  """
+  @deprecated "Use symlink_or_copy/2"
   def symlink_or_copy(hard_copy?, source, target) do
     if hard_copy? do
       if File.exists?(source) do
@@ -453,6 +459,9 @@ defmodule Mix.Utils do
   Symlinks directory `source` to `target` or copies it recursively
   in case symlink fails.
 
+  In case of conflicts, it copies files only if they have been
+  recently touched.
+
   Expects source and target to be absolute paths as it generates
   a relative symlink.
   """
@@ -464,9 +473,8 @@ defmodule Mix.Utils do
           {:win32, _} -> source
           _ -> make_relative_path(source, target)
         end
-        |> String.to_charlist()
 
-      case :file.read_link(target) do
+      case File.read_link(target) do
         {:ok, ^link} ->
           :ok
 
@@ -509,15 +517,19 @@ defmodule Mix.Utils do
   end
 
   defp do_symlink_or_copy(source, target, link) do
-    case :file.make_symlink(link, target) do
+    case File.ln_s(link, target) do
       :ok ->
         :ok
 
       {:error, _} ->
         files =
-          File.cp_r!(source, target, fn orig, dest ->
-            File.stat!(orig).mtime > File.stat!(dest).mtime
-          end)
+          File.cp_r!(source, target,
+            on_conflict: fn orig, dest ->
+              {orig_mtime, orig_size} = last_modified_and_size(orig)
+              {dest_mtime, dest_size} = last_modified_and_size(dest)
+              orig_mtime > dest_mtime or orig_size != dest_size
+            end
+          )
 
         {:ok, files}
     end
@@ -637,6 +649,10 @@ defmodule Mix.Utils do
   end
 
   defp read_httpc(path) do
+    Mix.ensure_application!(:public_key)
+    Mix.ensure_application!(:ssl)
+    Mix.ensure_application!(:inets)
+
     {:ok, _} = Application.ensure_all_started(:ssl)
     {:ok, _} = Application.ensure_all_started(:inets)
 
@@ -644,8 +660,26 @@ defmodule Mix.Utils do
     # the effects of using an HTTP proxy to this function
     {:ok, _pid} = :inets.start(:httpc, profile: :mix)
 
-    headers = [{'user-agent', 'Mix/#{System.version()}'}]
+    headers = [{~c"user-agent", ~c"Mix/#{System.version()}"}]
     request = {:binary.bin_to_list(path), headers}
+
+    # Use the system certificates if available, otherwise skip peer verification
+    # TODO: Always use system certificates when OTP >= 25 is required
+    ssl_options =
+      if Code.ensure_loaded?(:public_key) and function_exported?(:public_key, :cacerts_get, 0) do
+        try do
+          [cacerts: apply(:public_key, :cacerts_get, [])]
+        rescue
+          _ ->
+            Mix.shell().error(
+              "warning: failed to load system certificates. SSL peer verification will be skipped but downloads are still verified with a checksum"
+            )
+
+            [verify: :verify_none]
+        end
+      else
+        [verify: :verify_none]
+      end
 
     # We are using relaxed: true because some servers is returning a Location
     # header with relative paths, which does not follow the spec. This would
@@ -653,7 +687,7 @@ defmodule Mix.Utils do
     # is given.
     #
     # If a proxy environment variable was supplied add a proxy to httpc.
-    http_options = [relaxed: true] ++ proxy_config(path)
+    http_options = [relaxed: true, ssl: ssl_options] ++ proxy_config(path)
 
     # Silence the warning from OTP as we verify the contents
     level = Logger.level()
@@ -662,7 +696,8 @@ defmodule Mix.Utils do
     try do
       case httpc_request(request, http_options) do
         {:error, {:failed_connect, [{:to_address, _}, {inet, _, reason}]}}
-        when inet in [:inet, :inet6] and reason in [:ehostunreach, :enetunreach] ->
+        when inet in [:inet, :inet6] and
+               reason in [:ehostunreach, :enetunreach, :eprotonosupport, :nxdomain] ->
           :httpc.set_options([ipfamily: fallback(inet)], :mix)
           request |> httpc_request(http_options) |> httpc_response()
 

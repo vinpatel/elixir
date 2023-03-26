@@ -24,12 +24,69 @@ defmodule ExUnitTest do
              assert ExUnit.run() == %{failures: 2, skipped: 0, total: 2, excluded: 0}
            end) =~ "\n2 tests, 2 failures\n"
 
-    ExUnit.Server.modules_loaded()
+    ExUnit.Server.modules_loaded(false)
 
     assert capture_io(fn ->
              assert ExUnit.async_run() |> ExUnit.await_run() ==
                       %{failures: 0, skipped: 0, total: 0, excluded: 0}
            end) =~ "\n0 failures\n"
+  end
+
+  test "supports rerunning given modules" do
+    defmodule SampleAsyncTest do
+      use ExUnit.Case, async: true, register: false
+
+      test "true" do
+        assert false
+      end
+    end
+
+    defmodule SampleSyncTest do
+      use ExUnit.Case, register: false
+
+      test "true" do
+        assert false
+      end
+    end
+
+    defmodule IgnoreTest do
+      use ExUnit.Case
+
+      test "true" do
+        assert false
+      end
+    end
+
+    configure_and_reload_on_exit([])
+
+    assert capture_io(fn ->
+             assert ExUnit.run() == %{
+                      failures: 1,
+                      skipped: 0,
+                      total: 1,
+                      excluded: 0
+                    }
+           end) =~ "\n1 test, 1 failure\n"
+
+    sample = [SampleSyncTest, SampleAsyncTest]
+
+    assert capture_io(fn ->
+             assert ExUnit.run(sample) == %{
+                      failures: 2,
+                      skipped: 0,
+                      total: 2,
+                      excluded: 0
+                    }
+           end) =~ "\n2 tests, 2 failures\n"
+
+    assert capture_io(fn ->
+             assert ExUnit.run(sample ++ sample) == %{
+                      failures: 2,
+                      skipped: 0,
+                      total: 2,
+                      excluded: 0
+                    }
+           end) =~ "\n2 tests, 2 failures\n"
   end
 
   test "prints aborted runs on sigquit", config do
@@ -96,6 +153,24 @@ defmodule ExUnitTest do
         end)
 
         receive after: (1000 -> :ok)
+      end
+    end
+
+    configure_and_reload_on_exit([])
+
+    assert capture_io(fn ->
+             assert ExUnit.run() == %{failures: 1, skipped: 0, total: 1, excluded: 0}
+           end) =~ "\n1 test, 1 failure\n"
+  end
+
+  test "reports capture log crashes" do
+    defmodule CaptureLogTest do
+      use ExUnit.Case
+
+      test "capture log crash because logger stopped" do
+        Logger.App.stop()
+        Logger.App.start()
+        flunk("this should fail")
       end
     end
 
@@ -241,13 +316,7 @@ defmodule ExUnitTest do
   test "log capturing" do
     defmodule LogCapturingTest do
       use ExUnit.Case
-
       require Logger
-
-      setup_all do
-        :ok = Logger.remove_backend(:console)
-        on_exit(fn -> Logger.add_backend(:console, flush: true) end)
-      end
 
       @tag :capture_log
       test "one" do
@@ -266,18 +335,12 @@ defmodule ExUnitTest do
         Logger.debug("three")
         assert 1 == 2
       end
-
-      test "four" do
-        Logger.debug("four")
-        assert 1 == 2
-      end
     end
 
     output = capture_io(&ExUnit.run/0)
-    assert output =~ "[debug] two\n"
     refute output =~ "[debug] one\n"
+    assert output =~ "[debug] two\n"
     assert output =~ "[debug] three\n"
-    refute output =~ "[debug] four\n"
   end
 
   test "supports multi errors" do
@@ -465,6 +528,25 @@ defmodule ExUnitTest do
       end)
 
     assert output =~ "trying to set reserved field :file"
+  end
+
+  test "removes new lines from multiline test name (with --trace option)" do
+    defmodule Multiline do
+      use ExUnit.Case
+
+      test """
+      - line 1
+      - line 2
+      """ do
+        :ok
+      end
+    end
+
+    configure_and_reload_on_exit(trace: true)
+
+    output = capture_io(fn -> ExUnit.run() end)
+
+    assert output =~ "test - line 1 - line 2"
   end
 
   test "raises on reserved tag :async in setup" do
@@ -808,11 +890,33 @@ defmodule ExUnitTest do
     end
   end
 
+  test "prints warning when all tests are excluded" do
+    defmodule OnlyExcludedTests do
+      use ExUnit.Case
+
+      @tag :exclude
+      test "excluded test", do: assert(false)
+
+      @tag :exclude
+      test "one more excluded test", do: assert(false)
+    end
+
+    configure_and_reload_on_exit([])
+
+    output =
+      capture_io(fn ->
+        assert ExUnit.run() == %{total: 2, failures: 0, excluded: 2, skipped: 0}
+      end)
+
+    assert output =~ "All tests have been excluded.\n"
+    assert output =~ "2 tests, 0 failures, 2 excluded\n"
+  end
+
   ##  Helpers
 
   defp run_with_filter(filters, cases) do
     Enum.each(cases, &ExUnit.Server.add_sync_module/1)
-    ExUnit.Server.modules_loaded()
+    ExUnit.Server.modules_loaded(false)
 
     opts =
       ExUnit.configuration()

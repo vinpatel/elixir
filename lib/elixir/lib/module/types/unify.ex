@@ -43,12 +43,12 @@ defmodule Module.Types.Unify do
     {:ok, same, context}
   end
 
-  def unify(type, {:var, var}, stack, context) do
-    unify_var(var, type, stack, context, _var_source = false)
-  end
-
   def unify({:var, var}, type, stack, context) do
     unify_var(var, type, stack, context, _var_source = true)
+  end
+
+  def unify(type, {:var, var}, stack, context) do
+    unify_var(var, type, stack, context, _var_source = false)
   end
 
   def unify({:tuple, n, sources}, {:tuple, n, targets}, stack, context) do
@@ -128,30 +128,10 @@ defmodule Module.Types.Unify do
           {:ok, {:var, var}, context}
         end
 
-      %{^var => {:var, new_var} = var_type} ->
-        unify_result =
-          if var_source? do
-            unify(var_type, type, stack, context)
-          else
-            unify(type, var_type, stack, context)
-          end
-
-        case unify_result do
-          {:ok, type, context} ->
-            {:ok, type, context}
-
-          {:error, {type, reason, %{traces: error_traces} = error_context}} ->
-            old_var_traces = Map.get(context.traces, new_var, [])
-            new_var_traces = Map.get(error_traces, new_var, [])
-            add_var_traces = Enum.drop(new_var_traces, -length(old_var_traces))
-
-            error_traces =
-              error_traces
-              |> Map.update(var, add_var_traces, &(add_var_traces ++ &1))
-              |> Map.put(new_var, old_var_traces)
-
-            {:error, {type, reason, %{error_context | traces: error_traces}}}
-        end
+      %{^var => {:var, _} = var_type} ->
+        # Do not recursively traverse type vars for now
+        # to avoid pathological cases related to performance.
+        {:ok, var_type, context}
 
       %{^var => var_type} ->
         # Only add trace if the variable wasn't already "expanded"
@@ -379,11 +359,11 @@ defmodule Module.Types.Unify do
   end
 
   @doc """
-  Resolves a variable raising if it is unbound.
+  Maybe resolves a variable.
   """
   def resolve_var({:var, var}, context) do
     case context.types do
-      %{^var => :unbound} -> raise "cannot resolve unbound var"
+      %{^var => :unbound} -> {:var, var}
       %{^var => type} -> resolve_var(type, context)
     end
   end

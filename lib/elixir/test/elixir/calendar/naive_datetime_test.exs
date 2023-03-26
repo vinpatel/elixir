@@ -119,6 +119,17 @@ defmodule NaiveDateTimeTest do
     assert NaiveDateTime.compare(ndt4, ndt3) == :lt
   end
 
+  test "before?/2 and after?/2" do
+    ndt1 = ~N[2022-01-12 10:10:11.0019]
+    ndt2 = ~N[2022-02-16 13:20:15.0019]
+
+    assert NaiveDateTime.before?(ndt1, ndt2)
+    assert not NaiveDateTime.before?(ndt2, ndt1)
+
+    assert NaiveDateTime.after?(ndt2, ndt1)
+    assert not NaiveDateTime.after?(ndt1, ndt2)
+  end
+
   test "to_iso8601/1" do
     ndt = ~N[2000-04-16 12:34:15.1234]
     ndt = put_in(ndt.calendar, FakeCalendar)
@@ -335,6 +346,27 @@ defmodule NaiveDateTimeTest do
 
     test "upcasting" do
       assert catch_error(NaiveDateTime.to_time(~T[00:00:00.000000]))
+    end
+  end
+
+  describe "beginning_of_day/1" do
+    test "precision" do
+      assert NaiveDateTime.beginning_of_day(~N[2000-01-01 23:00:07.123]) ==
+               ~N[2000-01-01 00:00:00.000]
+
+      assert NaiveDateTime.beginning_of_day(~N[2000-01-01 23:00:07]) == ~N[2000-01-01 00:00:00]
+    end
+  end
+
+  describe "end_of_day/1" do
+    test "precision" do
+      assert NaiveDateTime.end_of_day(~N[2000-01-01 23:00:07.1]) == ~N[2000-01-01 23:59:59.9]
+      assert NaiveDateTime.end_of_day(~N[2000-01-01 23:00:07.123]) == ~N[2000-01-01 23:59:59.999]
+
+      assert NaiveDateTime.end_of_day(~N[2000-01-01 23:00:07.12345]) ==
+               ~N[2000-01-01 23:59:59.99999]
+
+      assert NaiveDateTime.end_of_day(~N[2000-01-01 23:00:07]) == ~N[2000-01-01 23:59:59]
     end
   end
 end

@@ -89,7 +89,7 @@ defmodule ModuleTest do
       end
 
     assert_raise ArgumentError,
-                 "could not call Module.__put_attribute__/4 because the module ModuleTest.Raise is in read-only mode (@after_compile)",
+                 "could not call Module.put_attribute/3 because the module ModuleTest.Raise is in read-only mode (@after_compile)",
                  fn ->
                    Module.create(ModuleTest.Raise, contents, __ENV__)
                  end
@@ -108,8 +108,20 @@ defmodule ModuleTest do
     assert_received 42
   end
 
+  test "supports @after_verify for inlined modules" do
+    defmodule ModuleTest.AfterVerify do
+      @after_verify __MODULE__
+
+      def __after_verify__(ModuleTest.AfterVerify) do
+        send(self(), ModuleTest.AfterVerify)
+      end
+    end
+
+    assert_received ModuleTest.AfterVerify
+  end
+
   test "in memory modules are tagged as so" do
-    assert :code.which(__MODULE__) == ''
+    assert :code.which(__MODULE__) == ~c""
   end
 
   ## Eval
@@ -219,7 +231,7 @@ defmodule ModuleTest do
       @compile {:autoload, false}
     end
 
-    refute :code.is_loaded(NoAutoload)
+    refute Code.loaded?(NoAutoload)
   end
 
   ## Naming
@@ -267,7 +279,7 @@ defmodule ModuleTest do
 
   @file "sample.ex"
   test "@file sets __ENV__.file" do
-    assert __ENV__.file == "sample.ex"
+    assert __ENV__.file == Path.absname("sample.ex")
   end
 
   test "@file raises when invalid" do
@@ -318,6 +330,13 @@ defmodule ModuleTest do
     refute __ENV__.aliases[Elixir.ModuleTest]
     refute __ENV__.aliases[Elixir.NonAtomAlias]
     assert Elixir.ModuleTest.NonAtomAlias.hello() == :world
+  end
+
+  test "does not warn on captured underscored vars" do
+    _unused = 123
+
+    defmodule __MODULE__.NoVarWarning do
+    end
   end
 
   @compile {:no_warn_undefined, ModuleCreateSample}
@@ -423,6 +442,13 @@ defmodule ModuleTest do
     assert backend.debug_info(:elixir_v1, ModuleCreateNoDebugInfo, data, []) == {:error, :missing}
   end
 
+  test "compiles to core" do
+    {:ok, {Atom, [{~c"Dbgi", dbgi}]}} = Atom |> :code.which() |> :beam_lib.chunks([~c"Dbgi"])
+    {:debug_info_v1, backend, data} = :erlang.binary_to_term(dbgi)
+    {:ok, core} = backend.debug_info(:core_v1, Atom, data, [])
+    assert is_tuple(core)
+  end
+
   test "no function in module body" do
     in_module do
       assert __ENV__.function == nil
@@ -489,8 +515,7 @@ defmodule ModuleTest do
                  {{:., _, [:erlang, :+]}, _, [{:a, _, nil}, {:b, _, nil}]}}
               ]} = Module.get_definition(__MODULE__, {:foo, 2})
 
-      assert {:v1, :def, _, nil} =
-               Module.get_definition(__MODULE__, {:foo, 2}, nillify_clauses: true)
+      assert {:v1, :def, _, []} = Module.get_definition(__MODULE__, {:foo, 2}, skip_clauses: true)
 
       assert Module.delete_definition(__MODULE__, {:foo, 2})
       assert Module.get_definition(__MODULE__, {:foo, 2}) == nil

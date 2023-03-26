@@ -248,6 +248,31 @@ defmodule Calendar.ISO do
   defguardp is_std_offset(offset) when is_integer(offset)
 
   @doc """
+  Converts a `t:System.time_unit/0` to precision.
+
+  Integer-based time units always get maximum precision.
+
+  ## Examples
+
+      iex> Calendar.ISO.time_unit_to_precision(:nanosecond)
+      6
+
+      iex> Calendar.ISO.time_unit_to_precision(:second)
+      0
+
+      iex> Calendar.ISO.time_unit_to_precision(1)
+      6
+
+  """
+  @doc since: "1.15.0"
+  @spec time_unit_to_precision(System.time_unit()) :: 0..6
+  def time_unit_to_precision(:nanosecond), do: 6
+  def time_unit_to_precision(:microsecond), do: 6
+  def time_unit_to_precision(:millisecond), do: 3
+  def time_unit_to_precision(:second), do: 0
+  def time_unit_to_precision(int) when is_integer(int), do: 6
+
+  @doc """
   Parses a time `string` in the `:extended` format.
 
   For more information on supported strings, see how this
@@ -877,8 +902,8 @@ defmodule Calendar.ISO do
     rem(year, 4) === 0 and (rem(year, 100) !== 0 or rem(year, 400) === 0)
   end
 
-  # TODO: Deprecate me on v1.15
   @doc false
+  @deprecated "Use Calendar.ISO.day_of_week/4 instead"
   def day_of_week(year, month, day) do
     day_of_week(year, month, day, :default) |> elem(0)
   end
@@ -1388,6 +1413,46 @@ defmodule Calendar.ISO do
 
   defp zero_pad(val, count) do
     "-" <> zero_pad(-val, count)
+  end
+
+  @doc """
+  Converts the `t:Calendar.iso_days/0` to the first moment of the day.
+
+  ## Examples
+
+      iex> Calendar.ISO.iso_days_to_beginning_of_day({0, {0, 86400000000}})
+      {0, {0, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_beginning_of_day({730485, {43200000000, 86400000000}})
+      {730485, {0, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_beginning_of_day({730485, {46800000000, 86400000000}})
+      {730485, {0, 86400000000}}
+
+  """
+  @doc since: "1.15.0"
+  @impl true
+  @spec iso_days_to_beginning_of_day(Calendar.iso_days()) :: Calendar.iso_days()
+  def iso_days_to_beginning_of_day({days, _day_fraction}) do
+    {days, {0, @parts_per_day}}
+  end
+
+  @doc """
+  Converts the `t:Calendar.iso_days/0` to the last moment of the day.
+
+  ## Examples
+
+      iex> Calendar.ISO.iso_days_to_end_of_day({0, {0, 86400000000}})
+      {0, {86399999999, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_end_of_day({730485, {43200000000, 86400000000}})
+      {730485, {86399999999, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_end_of_day({730485, {46800000000, 86400000000}})
+      {730485, {86399999999, 86400000000}}
+
+  """
+  @doc since: "1.15.0"
+  @impl true
+  @spec iso_days_to_end_of_day(Calendar.iso_days()) :: Calendar.iso_days()
+  def iso_days_to_end_of_day({days, _day_fraction}) do
+    {days, {@parts_per_day - 1, @parts_per_day}}
   end
 
   ## Helpers

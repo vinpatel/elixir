@@ -146,6 +146,7 @@ defmodule Task.SupervisorTest do
 
     send(task.pid, true)
     assert task.__struct__ == Task
+    assert task.mfa == {__MODULE__, :wait_and_send, 2}
     assert Task.await(task) == :done
   end
 
@@ -160,6 +161,7 @@ defmodule Task.SupervisorTest do
       assert task.__struct__ == Task
       assert is_pid(task.pid)
       assert is_reference(task.ref)
+      assert task.mfa == {:erlang, :apply, 2}
 
       # Refute the link
       {:links, links} = Process.info(self(), :links)
@@ -212,6 +214,7 @@ defmodule Task.SupervisorTest do
 
     send(task.pid, true)
     assert task.__struct__ == Task
+    assert task.mfa == {__MODULE__, :wait_and_send, 2}
     assert Task.await(task) == :done
   end
 
@@ -316,23 +319,21 @@ defmodule Task.SupervisorTest do
   end
 
   describe "await/1" do
-    if System.otp_release() >= "24" do
-      test "demonitors and unalias on timeout", config do
-        task =
-          Task.Supervisor.async(config[:supervisor], fn ->
-            assert_receive :go
-            :done
-          end)
+    test "demonitors and unalias on timeout", config do
+      task =
+        Task.Supervisor.async(config[:supervisor], fn ->
+          assert_receive :go
+          :done
+        end)
 
-        assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
-        new_ref = Process.monitor(task.pid)
-        old_ref = task.ref
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+      new_ref = Process.monitor(task.pid)
+      old_ref = task.ref
 
-        send(task.pid, :go)
-        assert_receive {:DOWN, ^new_ref, _, _, _}
-        refute_received {^old_ref, :done}
-        refute_received {:DOWN, ^old_ref, _, _, _}
-      end
+      send(task.pid, :go)
+      assert_receive {:DOWN, ^new_ref, _, _, _}
+      refute_received {^old_ref, :done}
+      refute_received {:DOWN, ^old_ref, _, _, _}
     end
 
     test "exits on task throw", config do

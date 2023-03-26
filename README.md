@@ -1,6 +1,7 @@
-<img src="https://github.com/elixir-lang/elixir-lang.github.com/raw/main/images/logo/logo.png" width="200" alt="Elixir">
+<img src="https://github.com/elixir-lang/elixir-lang.github.com/raw/main/images/logo/logo.png#gh-light-mode-only" width="200" alt="Elixir">
+<img src="https://github.com/elixir-lang/elixir-lang.github.com/raw/main/images/logo/logo-dark.png#gh-dark-mode-only" width="200" alt="Elixir">
 
-[![CI](https://github.com/elixir-lang/elixir/workflows/CI/badge.svg?branch=main)](https://github.com/elixir-lang/elixir/actions?query=branch%3Amain+workflow%3ACI) [![Build status](https://api.cirrus-ci.com/github/elixir-lang/elixir.svg?branch=main)](https://cirrus-ci.com/github/elixir-lang/elixir)
+[![CI](https://github.com/elixir-lang/elixir/workflows/CI/badge.svg?branch=main)](https://github.com/elixir-lang/elixir/actions?query=branch%3Amain+workflow%3ACI)
 
 Elixir is a dynamic, functional language designed for building scalable
 and maintainable applications.
@@ -55,7 +56,8 @@ Keep the tone positive and be kind! For more information, see the
 For proposing new features, please start a discussion in the
 [Elixir Core mailing list][3]. Keep in mind that it is your responsibility
 to argue and explain why a feature is useful and how it will impact the
-codebase and the community.
+codebase and the community. The [language development history and outline
+are described on our website](https://elixir-lang.org/development.html).
 
 Once a proposal is accepted, it will be added to [the issue tracker][2].
 Features and bug fixes that have already been merged and will be included
@@ -126,6 +128,12 @@ bin/elixirc lib/elixir/lib/string.ex -o lib/elixir/ebin
 bin/elixir lib/elixir/test/elixir/string_test.exs
 ```
 
+You can also use the `LINE` env var to run a single test:
+
+```sh
+LINE=123 bin/elixir lib/elixir/test/elixir/string_test.exs
+````
+
 To recompile (including Erlang modules):
 
 ```sh
@@ -164,7 +172,7 @@ We outline our process below to clarify the roles of everyone involved.
 
 All pull requests must be approved by two committers before being merged into
 the repository. If any changes are necessary, the team will leave appropriate
-comments requesting changes to the code. Unfortunately we cannot guarantee a
+comments requesting changes to the code. Unfortunately, we cannot guarantee a
 pull request will be merged, even when modifications are requested, as the Elixir
 team will re-evaluate the contribution as it changes.
 
@@ -188,8 +196,8 @@ to be installed and built alongside Elixir:
 
 ```sh
 # After cloning and compiling Elixir, in its parent directory:
-git clone git://github.com/elixir-lang/ex_doc.git
-cd ex_doc && ../elixir/bin/mix do deps.get, compile
+git clone https://github.com/elixir-lang/ex_doc.git
+cd ex_doc && ../elixir/bin/mix do deps.get + compile
 ```
 
 Now go back to Elixir's root directory and run:

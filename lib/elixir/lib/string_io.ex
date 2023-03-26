@@ -13,7 +13,10 @@ defmodule StringIO do
 
   """
 
-  use GenServer
+  # We're implementing the GenServer behaviour instead of using the
+  # `use GenServer` macro, because we don't want the `child_spec/1`
+  # function as it doesn't make sense to be started under a supervisor.
+  @behaviour GenServer
 
   @doc ~S"""
   Creates an IO device.
@@ -55,7 +58,7 @@ defmodule StringIO do
   @spec open(binary, keyword, (pid -> res)) :: {:ok, res} when res: var
   def open(string, options, function)
       when is_binary(string) and is_list(options) and is_function(function, 1) do
-    {:ok, pid} = GenServer.start_link(__MODULE__, {string, options}, [])
+    {:ok, pid} = GenServer.start(__MODULE__, {self(), string, options}, [])
 
     try do
       {:ok, function.(pid)}
@@ -109,7 +112,7 @@ defmodule StringIO do
   def open(string, options_or_function \\ [])
 
   def open(string, options_or_function) when is_binary(string) and is_list(options_or_function) do
-    GenServer.start_link(__MODULE__, {string, options_or_function}, [])
+    GenServer.start(__MODULE__, {self(), string, options_or_function}, [])
   end
 
   def open(string, options_or_function)
@@ -172,7 +175,8 @@ defmodule StringIO do
   ## callbacks
 
   @impl true
-  def init({string, options}) do
+  def init({pid, string, options}) do
+    _ = Process.monitor(pid)
     capture_prompt = options[:capture_prompt] || false
     encoding = options[:encoding] || :unicode
     {:ok, %{encoding: encoding, input: string, output: "", capture_prompt: capture_prompt}}
@@ -182,6 +186,10 @@ defmodule StringIO do
   def handle_info({:io_request, from, reply_as, req}, state) do
     state = io_request(from, reply_as, req, state)
     {:noreply, state}
+  end
+
+  def handle_info({:DOWN, _, _, _, _}, state) do
+    {:stop, :shutdown, state}
   end
 
   def handle_info(_message, state) do
@@ -287,7 +295,7 @@ defmodule StringIO do
         {:ok, %{state | output: state.output <> string}}
 
       {_, _, _} ->
-        {{:error, req}, state}
+        {{:error, {:no_translation, encoding, state.encoding}}, state}
     end
   rescue
     ArgumentError -> {{:error, req}, state}
@@ -363,6 +371,7 @@ defmodule StringIO do
   defp get_until(encoding, prompt, mod, fun, args, %{input: input} = state) do
     case get_until(input, encoding, mod, fun, args, [], 0) do
       {result, input, count} ->
+        # Convert :eof to "" as they are both treated the same
         input =
           case input do
             :eof -> ""
@@ -389,7 +398,7 @@ defmodule StringIO do
   defp get_until(chars, encoding, mod, fun, args, continuation, count) do
     case bytes_until_eol(chars, encoding, 0) do
       {kind, size} when kind in [:split, :replace_split] ->
-        {line, rest} = :erlang.split_binary(chars, size)
+        <<line::binary-size(size), rest::binary>> = chars
 
         case apply(mod, fun, [continuation, binary_to_list(line, encoding) | args]) do
           {:done, result, :eof} ->
@@ -407,7 +416,6 @@ defmodule StringIO do
     end
   end
 
-  defp binary_to_list(data, _) when is_list(data), do: data
   defp binary_to_list(data, :unicode) when is_binary(data), do: String.to_charlist(data)
   defp binary_to_list(data, :latin1) when is_binary(data), do: :erlang.binary_to_list(data)
 

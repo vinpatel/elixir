@@ -30,7 +30,7 @@ defmodule Task.Supervised do
       {^owner_pid, ref, reply_to, callers, mfa} ->
         initial_call(mfa)
         put_callers(callers)
-        _ = mref && Process.demonitor(mref, [:flush])
+        _ = is_reference(mref) && Process.demonitor(mref, [:flush])
         send(reply_to, {ref, invoke_mfa(owner, mfa)})
 
       {:DOWN, ^mref, _, _, reason} ->
@@ -135,10 +135,10 @@ defmodule Task.Supervised do
         }
       }) do
     message =
-      '** Task ~p terminating~n' ++
-        '** Started from ~p~n' ++
-        '** When function  == ~p~n' ++
-        '**      arguments == ~p~n' ++ '** Reason for termination == ~n' ++ '** ~p~n'
+      ~c"** Task ~p terminating~n" ++
+        ~c"** Started from ~p~n" ++
+        ~c"** When function  == ~p~n" ++
+        ~c"**      arguments == ~p~n" ++ ~c"** Reason for termination == ~n" ++ ~c"** ~p~n"
 
     {message, [starter, name, fun, args, get_reason(reason)]}
   end
@@ -153,7 +153,7 @@ defmodule Task.Supervised do
   defp get_reason({:undef, [{mod, fun, args, _info} | _] = stacktrace} = reason)
        when is_atom(mod) and is_atom(fun) do
     cond do
-      :code.is_loaded(mod) === false ->
+      not Code.loaded?(mod) ->
         {:"module could not be loaded", stacktrace}
 
       is_list(args) and not function_exported?(mod, fun, length(args)) ->
@@ -184,6 +184,7 @@ defmodule Task.Supervised do
     ordered? = Keyword.get(options, :ordered, true)
     timeout = Keyword.get(options, :timeout, 5000)
     on_timeout = Keyword.get(options, :on_timeout, :exit)
+    zip_input_on_exit? = Keyword.get(options, :zip_input_on_exit, false)
     parent = self()
 
     {:trap_exit, trap_exit?} = Process.info(self(), :trap_exit)
@@ -211,6 +212,7 @@ defmodule Task.Supervised do
       ordered: ordered?,
       timeout: timeout,
       on_timeout: on_timeout,
+      zip_input_on_exit: zip_input_on_exit?,
       callers: callers,
       mfa: mfa
     }
@@ -254,6 +256,7 @@ defmodule Task.Supervised do
       monitor_ref: monitor_ref,
       timeout: timeout,
       on_timeout: on_timeout,
+      zip_input_on_exit: zip_input_on_exit?,
       ordered: ordered?
     } = config
 
@@ -263,7 +266,7 @@ defmodule Task.Supervised do
       # this response when the replying task dies (we'll see this in the :down
       # message).
       {{^monitor_ref, position}, reply} ->
-        %{^position => {pid, :running}} = waiting
+        %{^position => {pid, :running, _element}} = waiting
         waiting = Map.put(waiting, position, {pid, {:ok, reply}})
         stream_reduce({:cont, acc}, max, spawned, delivered, waiting, next, config)
 
@@ -281,20 +284,20 @@ defmodule Task.Supervised do
               ok
 
             # If the task exited by itself before replying, we emit {:exit, reason}.
-            %{^position => {_, :running}}
+            %{^position => {_, :running, element}}
             when kind == :down ->
-              {:exit, reason}
+              if zip_input_on_exit?, do: {:exit, {element, reason}}, else: {:exit, reason}
 
             # If the task timed out before replying, we either exit (on_timeout: :exit)
             # or emit {:exit, :timeout} (on_timeout: :kill_task) (note the task is already
             # dead at this point).
-            %{^position => {_, :running}}
+            %{^position => {_, :running, element}}
             when kind == :timed_out ->
               if on_timeout == :exit do
                 stream_cleanup_inbox(monitor_pid, monitor_ref)
                 exit({:timeout, {__MODULE__, :stream, [timeout]}})
               else
-                {:exit, :timeout}
+                if zip_input_on_exit?, do: {:exit, {element, :timeout}}, else: {:exit, :timeout}
               end
           end
 
@@ -424,7 +427,8 @@ defmodule Task.Supervised do
       monitor_ref: monitor_ref,
       timeout: timeout,
       callers: callers,
-      mfa: mfa
+      mfa: mfa,
+      zip_input_on_exit: zip_input_on_exit?
     } = config
 
     send(monitor_pid, {:spawn, spawned})
@@ -433,7 +437,8 @@ defmodule Task.Supervised do
       {:spawned, {^monitor_ref, ^spawned}, pid} ->
         mfa_with_value = normalize_mfa_with_arg(mfa, value)
         send(pid, {self(), {monitor_ref, spawned}, self(), callers, mfa_with_value})
-        Map.put(waiting, spawned, {pid, :running})
+        stored_value = if zip_input_on_exit?, do: value, else: nil
+        Map.put(waiting, spawned, {pid, :running, stored_value})
 
       {:max_children, ^monitor_ref} ->
         stream_close(config)

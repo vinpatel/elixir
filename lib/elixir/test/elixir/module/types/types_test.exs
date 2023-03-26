@@ -128,17 +128,17 @@ defmodule Module.Types.TypesTest do
              in expression:
 
                  # types_test.ex:1
-                 <<..., var::binary()>>
+                 <<..., var::binary>>
 
              where "var" was given the type integer() in:
 
                  # types_test.ex:1
-                 <<var::integer(), ...>>
+                 <<var::integer, ...>>
 
              where "var" was given the type binary() in:
 
                  # types_test.ex:1
-                 <<..., var::binary()>>
+                 <<..., var::binary>>
              """
     end
 
@@ -187,36 +187,6 @@ defmodule Module.Types.TypesTest do
              """
     end
 
-    test "warns on guards with multiple variables" do
-      string = warning([x = y], [is_integer(x) and is_binary(y)], {x, y})
-
-      assert string == """
-             incompatible types:
-
-                 integer() !~ binary()
-
-             in expression:
-
-                 # types_test.ex:1
-                 is_binary(y)
-
-             where "y" was given the same type as "x" in:
-
-                 # types_test.ex:1
-                 x = y
-
-             where "y" was given the type binary() in:
-
-                 # types_test.ex:1
-                 is_binary(y)
-
-             where "x" was given the type integer() in:
-
-                 # types_test.ex:1
-                 is_integer(x)
-             """
-    end
-
     test "warns on guards from cases unless generated" do
       string =
         warning(
@@ -241,36 +211,6 @@ defmodule Module.Types.TypesTest do
         )
 
       assert string == :none
-    end
-
-    test "only show relevant traces in warning" do
-      string = warning([x = y, z], [is_integer(x) and is_binary(y) and is_boolean(z)], {x, y, z})
-
-      assert string == """
-             incompatible types:
-
-                 integer() !~ binary()
-
-             in expression:
-
-                 # types_test.ex:1
-                 is_binary(y)
-
-             where "y" was given the same type as "x" in:
-
-                 # types_test.ex:1
-                 x = y
-
-             where "y" was given the type binary() in:
-
-                 # types_test.ex:1
-                 is_binary(y)
-
-             where "x" was given the type integer() in:
-
-                 # types_test.ex:1
-                 is_integer(x)
-             """
     end
 
     test "check body" do
@@ -337,7 +277,7 @@ defmodule Module.Types.TypesTest do
              in expression:
 
                  # types_test.ex:1
-                 <<foo::integer()>>
+                 <<foo::integer>>
 
              where "foo" was given the type binary() in:
 
@@ -347,7 +287,7 @@ defmodule Module.Types.TypesTest do
              where "foo" was given the type integer() in:
 
                  # types_test.ex:1
-                 <<foo::integer()>>
+                 <<foo::integer>>
              """
     end
 
@@ -417,6 +357,25 @@ defmodule Module.Types.TypesTest do
                  foo - :bar
              """
     end
+
+    test "rewrite call" do
+      string = warning([foo], [is_map_key(1, foo)], foo)
+
+      assert string == """
+             expected Kernel.is_map_key/2 to have signature:
+
+                 integer(), var1 -> dynamic()
+
+             but it has signature:
+
+                 %{optional(dynamic()) => dynamic()}, dynamic() -> dynamic()
+
+             in expression:
+
+                 # types_test.ex:1
+                 is_map_key(1, foo)
+             """
+    end
   end
 
   describe "map warnings" do
@@ -443,7 +402,17 @@ defmodule Module.Types.TypesTest do
                  # types_test.ex:5
                  %{"id" => user_id} = user
 
-             where "user" was given the same type as "amount" in:
+             where "amount" was given the type binary() in:
+
+                 # types_test.ex:3
+                 %{"amount" => amount} = event
+
+             where "amount" was given the same type as "user" in:
+
+                 # types_test.ex:4
+                 %{"user" => user} = event
+
+             where "user" was given the type binary() in:
 
                  # types_test.ex:4
                  %{"user" => user} = event
@@ -452,11 +421,6 @@ defmodule Module.Types.TypesTest do
 
                  # types_test.ex:5
                  %{"id" => user_id} = user
-
-             where "amount" was given the type binary() in:
-
-                 # types_test.ex:3
-                 %{"amount" => amount} = event
              """
     end
 
@@ -685,6 +649,70 @@ defmodule Module.Types.TypesTest do
                  %{other_id: id} = foo
                  %{id: id}
                end
+             ) == :none
+    end
+
+    test "no-recursion on guards with map fields" do
+      assert warning(
+               [assigns],
+               (
+                 variable_enum = assigns.variable_enum
+
+                 case true do
+                   _ when variable_enum != nil -> assigns.variable_enum
+                 end
+               )
+             ) == :none
+    end
+
+    test "map patterns with pinned keys and field access" do
+      assert warning(
+               [x, y],
+               (
+                 key_var = y
+                 %{^key_var => _value} = x
+                 key_var2 = y
+                 %{^key_var2 => _value2} = x
+                 y.z
+               )
+             ) == :none
+    end
+
+    test "map patterns with pinned keys" do
+      assert warning(
+               [x, y],
+               (
+                 key_var = y
+                 %{^key_var => _value} = x
+                 key_var2 = y
+                 %{^key_var2 => _value2} = x
+                 key_var3 = y
+                 %{^key_var3 => _value3} = x
+               )
+             ) == :none
+    end
+
+    test "map updates with var key" do
+      assert warning(
+               [state0, key0],
+               (
+                 state1 = %{state0 | key0 => true}
+                 key1 = key0
+                 state2 = %{state1 | key1 => true}
+                 state2
+               )
+             ) == :none
+    end
+
+    test "nested map updates" do
+      assert warning(
+               [state],
+               (
+                 _foo = state.key.user_id
+                 _bar = state.key.user_id
+                 state = %{state | key: %{state.key | other_id: 1}}
+                 _baz = state.key.user_id
+               )
              ) == :none
     end
   end

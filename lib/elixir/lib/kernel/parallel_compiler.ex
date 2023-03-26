@@ -5,9 +5,14 @@ defmodule Kernel.ParallelCompiler do
 
   @typedoc "The line. 0 indicates no line."
   @type line() :: non_neg_integer()
-  @type location() :: line() | {line(), column :: non_neg_integer}
+  @type location() :: line() | {pos_integer(), column :: non_neg_integer}
   @type warning() :: {file :: Path.t(), location(), message :: String.t()}
-  @type error() :: {file :: Path.t(), line(), message :: String.t()}
+  @type error() :: {file :: Path.t(), location(), message :: String.t()}
+
+  @type info :: %{
+          runtime_warnings: [warning],
+          compile_warnings: [warning]
+        }
 
   @doc """
   Starts a task for parallel compilation.
@@ -28,7 +33,7 @@ defmodule Kernel.ParallelCompiler do
         dest = :erlang.get(:elixir_compiler_dest)
 
         {:error_handler, error_handler} = :erlang.process_info(self(), :error_handler)
-        checker = Module.ParallelChecker.get()
+        {_parent, checker} = Module.ParallelChecker.get()
 
         Task.async(fn ->
           send(compiler, {:async, self()})
@@ -55,7 +60,15 @@ defmodule Kernel.ParallelCompiler do
   the current file stops being compiled until the dependency is
   resolved.
 
-  It returns `{:ok, modules, warnings}` or `{:error, errors, warnings}`.
+  It returns `{:ok, modules, warnings}` or `{:error, errors, warnings}`
+  by default but we recommend using `return_maps: true` so it returns
+  a map as third element instead of a list of warnings. The map has the
+  shape of:
+
+      %{
+        runtime_warnings: [warning],
+        compile_warnings: [warning]
+      }
 
   Both errors and warnings are a list of three-element tuples containing
   the file, line and the formatted error/warning.
@@ -95,9 +108,13 @@ defmodule Kernel.ParallelCompiler do
 
     * `:beam_timestamp` - the modification timestamp to give all BEAM files
 
+    * `:return_maps` (since v1.15.0) - returns maps with information instead of
+      a list of warnings
+
   """
   @doc since: "1.6.0"
-  @spec compile([Path.t()], keyword()) :: {:ok, [atom], [warning]} | {:error, [error], [warning]}
+  @spec compile([Path.t()], keyword()) ::
+          {:ok, [atom], [warning] | info()} | {:error, [error], [warning] | info()}
   def compile(files, options \\ []) when is_list(options) do
     spawn_workers(files, :compile, options)
   end
@@ -109,7 +126,7 @@ defmodule Kernel.ParallelCompiler do
   """
   @doc since: "1.6.0"
   @spec compile_to_path([Path.t()], Path.t(), keyword()) ::
-          {:ok, [atom], [warning]} | {:error, [error], [warning]}
+          {:ok, [atom], [warning] | info()} | {:error, [error], [warning] | info()}
   def compile_to_path(files, path, options \\ []) when is_binary(path) and is_list(options) do
     spawn_workers(files, {:compile, path}, options)
   end
@@ -120,7 +137,15 @@ defmodule Kernel.ParallelCompiler do
   Opposite to compile, dependencies are not attempted to be
   automatically solved between files.
 
-  It returns `{:ok, modules, warnings}` or `{:error, errors, warnings}`.
+  It returns `{:ok, modules, warnings}` or `{:error, errors, warnings}`
+  by default but we recommend using `return_maps: true` so it returns
+  a map as third element instead of a list of warnings. The map has the
+  shape of:
+
+      %{
+        runtime_warnings: [warning],
+        compile_warnings: [warning]
+      }
 
   Both errors and warnings are a list of three-element tuples containing
   the file, line and the formatted error/warning.
@@ -136,7 +161,7 @@ defmodule Kernel.ParallelCompiler do
   """
   @doc since: "1.6.0"
   @spec require([Path.t()], keyword()) ::
-          {:ok, [atom], [warning]} | {:error, [error], [warning]}
+          {:ok, [atom], [warning] | info()} | {:error, [error], [warning] | info()}
   def require(files, options \\ []) when is_list(options) do
     spawn_workers(files, :require, options)
   end
@@ -147,7 +172,7 @@ defmodule Kernel.ParallelCompiler do
   @doc since: "1.13.0"
   @spec print_warning(warning) :: :ok
   def print_warning({file, location, warning}) do
-    :elixir_errors.print_warning(location, file, warning)
+    :elixir_errors.print_warning_no_diagnostic(location, file, warning)
   end
 
   @doc false
@@ -173,26 +198,39 @@ defmodule Kernel.ParallelCompiler do
     schedulers = max(:erlang.system_info(:schedulers_online), 2)
     {:ok, checker} = Module.ParallelChecker.start_link(schedulers)
 
-    try do
-      outcome = spawn_workers(schedulers, checker, files, output, options)
-      {outcome, Code.get_compiler_option(:warnings_as_errors)}
+    {status, modules_or_errors, info} =
+      try do
+        outcome = spawn_workers(schedulers, checker, files, output, options)
+        {outcome, Code.get_compiler_option(:warnings_as_errors)}
+      else
+        {{:ok, _, %{runtime_warnings: r_warnings, compile_warnings: c_warnings} = info}, true}
+        when r_warnings != [] or c_warnings != [] ->
+          message =
+            "Compilation failed due to warnings while using the --warnings-as-errors option"
+
+          IO.puts(:stderr, message)
+          {:error, r_warnings ++ c_warnings, %{info | runtime_warnings: [], compile_warnings: []}}
+
+        {{:ok, outcome, info}, _} ->
+          beam_timestamp = Keyword.get(options, :beam_timestamp)
+          {:ok, write_module_binaries(outcome, output, beam_timestamp), info}
+
+        {{:error, errors, info}, true} ->
+          %{runtime_warnings: r_warnings, compile_warnings: c_warnings} = info
+          info = %{info | runtime_warnings: [], compile_warnings: []}
+          {:error, c_warnings ++ r_warnings ++ errors, info}
+
+        {{:error, errors, info}, _} ->
+          {:error, errors, info}
+      after
+        Module.ParallelChecker.stop(checker)
+      end
+
+    # TODO: Require this to be set from Elixir v1.19
+    if Keyword.get(options, :return_maps, false) do
+      {status, modules_or_errors, info}
     else
-      {{:ok, _, [_ | _] = warnings}, true} ->
-        message = "Compilation failed due to warnings while using the --warnings-as-errors option"
-        IO.puts(:stderr, message)
-        {:error, warnings, []}
-
-      {{:ok, outcome, warnings}, _} ->
-        beam_timestamp = Keyword.get(options, :beam_timestamp)
-        {:ok, write_module_binaries(outcome, output, beam_timestamp), warnings}
-
-      {{:error, errors, warnings}, true} ->
-        {:error, errors ++ warnings, []}
-
-      {{:error, errors, warnings}, _} ->
-        {:error, errors, warnings}
-    after
-      Module.ParallelChecker.stop(checker)
+      {status, modules_or_errors, info.runtime_warnings ++ info.compile_warnings}
     end
   end
 
@@ -201,7 +239,7 @@ defmodule Kernel.ParallelCompiler do
     timer_ref = Process.send_after(self(), :threshold_check, threshold)
 
     {outcome, state} =
-      spawn_workers(files, 0, [], [], %{}, [], %{
+      spawn_workers(files, %{}, %{}, [], %{}, [], [], %{
         dest: Keyword.get(options, :dest),
         each_cycle: Keyword.get(options, :each_cycle, fn -> {:runtime, [], []} end),
         each_file: Keyword.get(options, :each_file, fn _, _ -> :ok end) |> each_file(),
@@ -241,7 +279,7 @@ defmodule Kernel.ParallelCompiler do
 
   defp write_module_binaries(result, {:compile, path}, timestamp) do
     Enum.flat_map(result, fn
-      {{:module, module}, {binary, _map}} ->
+      {{:module, module}, binary} when is_binary(binary) ->
         full_path = Path.join(path, Atom.to_string(module) <> ".beam")
         File.write!(full_path, binary)
         if timestamp, do: File.touch!(full_path, timestamp)
@@ -253,32 +291,26 @@ defmodule Kernel.ParallelCompiler do
   end
 
   defp write_module_binaries(result, _output, _timestamp) do
-    for {{:module, module}, _} <- result, do: module
+    for {{:module, module}, binary} when is_binary(binary) <- result, do: module
   end
 
   ## Verification
 
-  defp verify_modules(result, warnings, dependent_modules, state) do
-    checker_warnings = maybe_check_modules(result, dependent_modules, state)
-    warnings = Enum.reverse(warnings, checker_warnings)
-    {{:ok, result, warnings}, state}
+  defp verify_modules(result, compile_warnings, dependent_modules, state) do
+    runtime_warnings = maybe_check_modules(result, dependent_modules, state)
+    info = %{compile_warnings: Enum.reverse(compile_warnings), runtime_warnings: runtime_warnings}
+    {{:ok, result, info}, state}
   end
 
   defp maybe_check_modules(result, runtime_modules, state) do
     %{profile: profile, checker: checker} = state
 
     compiled_modules =
-      for {{:module, _module}, {_binary, info}} <- result,
-          do: info
-
-    runtime_modules =
-      for module <- runtime_modules,
-          path = :code.which(module),
-          is_list(path) and path != [],
-          do: {module, path}
+      for {{:module, module}, binary} when is_binary(binary) <- result,
+          do: module
 
     profile_checker(profile, compiled_modules, runtime_modules, fn ->
-      Module.ParallelChecker.verify(checker, compiled_modules, runtime_modules)
+      Module.ParallelChecker.verify(checker, runtime_modules)
     end)
   end
 
@@ -307,30 +339,31 @@ defmodule Kernel.ParallelCompiler do
          files,
          result,
          warnings,
+         errors,
          %{schedulers: schedulers} = state
        )
-       when spawned - length(waiting) >= schedulers do
-    wait_for_messages(queue, spawned, waiting, files, result, warnings, state)
+       when map_size(spawned) - map_size(waiting) >= schedulers do
+    wait_for_messages(queue, spawned, waiting, files, result, warnings, errors, state)
   end
 
   # Release waiting processes
-  defp spawn_workers([{ref, found} | t], spawned, waiting, files, result, warnings, state) do
+  defp spawn_workers([{pid, found} | t], spawned, waiting, files, result, warnings, errors, state) do
     {files, waiting} =
-      case List.keytake(waiting, ref, 2) do
-        {{_kind, pid, ^ref, file_pid, _on, _defining, _deadlock}, waiting} ->
+      case Map.pop(waiting, pid) do
+        {{kind, ref, file_pid, on, _defining, _deadlock}, waiting} ->
           send(pid, {ref, found})
-          {update_timing(files, file_pid, :waiting), waiting}
+          {update_timing(files, file_pid, {:waiting, kind, on}), waiting}
 
-        nil ->
+        {nil, waiting} ->
           # In case the waiting process died (for example, it was an async process),
           # it will no longer be on the list. So we need to take it into account here.
           {files, waiting}
       end
 
-    spawn_workers(t, spawned, waiting, files, result, warnings, state)
+    spawn_workers(t, spawned, waiting, files, result, warnings, errors, state)
   end
 
-  defp spawn_workers([file | queue], spawned, waiting, files, result, warnings, state) do
+  defp spawn_workers([file | queue], spawned, waiting, files, result, warnings, errors, state) do
     %{output: output, dest: dest, checker: checker} = state
     parent = self()
     file = Path.expand(file)
@@ -361,16 +394,20 @@ defmodule Kernel.ParallelCompiler do
       file: file,
       timestamp: System.monotonic_time(),
       compiling: 0,
-      waiting: 0,
+      waiting: [],
       warned: false
     }
 
-    files = [file_data | files]
-    spawn_workers(queue, spawned + 1, waiting, files, result, warnings, state)
+    new_files = [file_data | files]
+    new_spawned = Map.put(spawned, ref, pid)
+    spawn_workers(queue, new_spawned, waiting, new_files, result, warnings, errors, state)
   end
 
   # No more queue, nothing waiting, this cycle is done
-  defp spawn_workers([], 0, [], [], result, warnings, state) do
+  defp spawn_workers([], spawned, waiting, files, result, warnings, errors, state)
+       when map_size(spawned) == 0 and map_size(waiting) == 0 do
+    [] = errors
+    [] = files
     cycle_return = each_cycle_return(state.each_cycle.())
     state = cycle_timing(result, state)
 
@@ -382,28 +419,20 @@ defmodule Kernel.ParallelCompiler do
         verify_modules(result, extra_warnings ++ warnings, [], state)
 
       {:compile, more, extra_warnings} ->
-        spawn_workers(more, 0, [], [], result, extra_warnings ++ warnings, state)
+        spawn_workers(more, %{}, %{}, [], result, extra_warnings ++ warnings, errors, state)
     end
   end
 
-  # files x, waiting for x: POSSIBLE ERROR! Release processes so we get the failures
-
-  # Single entry, just release it.
-  defp spawn_workers(
-         [],
-         1,
-         [{_, pid, ref, _, _, _, _}] = waiting,
-         [%{pid: pid}] = files,
-         result,
-         warnings,
-         state
-       ) do
-    spawn_workers([{ref, :not_found}], 1, waiting, files, result, warnings, state)
+  # spawned 1, waiting for 1: Release it!
+  defp spawn_workers([], spawned, waiting, files, result, warnings, errors, state)
+       when map_size(waiting) == map_size(spawned) and map_size(waiting) == 1 do
+    {pid, _, _iterator} = :maps.next(:maps.iterator(waiting))
+    spawn_workers([{pid, :not_found}], spawned, waiting, files, result, warnings, errors, state)
   end
 
-  # Multiple entries, try to release modules.
-  defp spawn_workers([], spawned, waiting, files, result, warnings, state)
-       when length(waiting) == spawned do
+  # spawned x, waiting for x: POSSIBLE ERROR! Release processes so we get the failures
+  defp spawn_workers([], spawned, waiting, files, result, warnings, errors, state)
+       when map_size(waiting) == map_size(spawned) do
     # There is potentially a deadlock. We will release modules with
     # the following order:
     #
@@ -421,23 +450,25 @@ defmodule Kernel.ParallelCompiler do
     # Finally, note there is no difference between hard and raise, the
     # difference is where the raise is happening, inside the compiler
     # or in the caller.
+    waiting_list = Map.to_list(waiting)
 
     deadlocked =
-      deadlocked(waiting, :soft, false) ||
-        deadlocked(waiting, :soft, true) || deadlocked(waiting, :hard, false) ||
-        without_definition(waiting, files)
+      deadlocked(waiting_list, :soft, false) ||
+        deadlocked(waiting_list, :soft, true) ||
+        deadlocked(waiting_list, :hard, false) ||
+        without_definition(waiting_list, files)
 
     if deadlocked do
-      spawn_workers(deadlocked, spawned, waiting, files, result, warnings, state)
+      spawn_workers(deadlocked, spawned, waiting, files, result, warnings, errors, state)
     else
-      errors = handle_deadlock(waiting, files)
-      {{:error, errors, warnings}, state}
+      deadlock_errors = handle_deadlock(waiting, files)
+      {return_error(deadlock_errors ++ errors, warnings), state}
     end
   end
 
-  # No more queue, but spawned and length(waiting) do not match
-  defp spawn_workers([], spawned, waiting, files, result, warnings, state) do
-    wait_for_messages([], spawned, waiting, files, result, warnings, state)
+  # No more queue, but spawned and map_size(waiting) do not match
+  defp spawn_workers([], spawned, waiting, files, result, warnings, errors, state) do
+    wait_for_messages([], spawned, waiting, files, result, warnings, errors, state)
   end
 
   defp compile_file(file, path, parent) do
@@ -476,7 +507,7 @@ defmodule Kernel.ParallelCompiler do
   end
 
   defp count_modules(result) do
-    Enum.count(result, &match?({{:module, _}, _}, &1))
+    Enum.count(result, &match?({{:module, _}, binary} when is_binary(binary), &1))
   end
 
   defp each_cycle_return({kind, modules, warnings}), do: {kind, modules, warnings}
@@ -495,84 +526,101 @@ defmodule Kernel.ParallelCompiler do
   # The goal of this function is to find leaves in the dependency graph,
   # i.e. to find code that depends on code that we know is not being defined.
   # Note that not all files have been compiled yet, so they may not be in waiting.
-  defp without_definition(waiting, files) do
-    nillify_empty(
-      for %{pid: pid} <- files,
-          {_, _, ref, ^pid, on, _, _} <- waiting,
-          not defining?(on, waiting),
-          do: {ref, :not_found}
+  defp without_definition(waiting_list, files) do
+    nilify_empty_or_sort(
+      for %{pid: file_pid} <- files,
+          {pid, {_, _, ^file_pid, on, _, _}} <- waiting_list,
+          not defining?(on, waiting_list),
+          do: {pid, :not_found}
     )
   end
 
-  defp deadlocked(waiting, type, defining?) do
-    nillify_empty(
-      for {_, _, ref, _, on, _, ^type} <- waiting,
-          defining?(on, waiting) == defining?,
-          do: {ref, :deadlock}
+  defp deadlocked(waiting_list, type, defining?) do
+    nilify_empty_or_sort(
+      for {pid, {_, _, _, on, _, ^type}} <- waiting_list,
+          defining?(on, waiting_list) == defining?,
+          do: {pid, :deadlock}
     )
   end
 
-  defp defining?(on, waiting) do
-    Enum.any?(waiting, fn {_, _, _, _, _, defining, _} -> on in defining end)
+  defp defining?(on, waiting_list) do
+    Enum.any?(waiting_list, fn {_, {_, _, _, _, defining, _}} -> on in defining end)
   end
 
-  defp nillify_empty([]), do: nil
-  defp nillify_empty([_ | _] = list), do: list
+  defp nilify_empty_or_sort([]), do: nil
+  defp nilify_empty_or_sort([_ | _] = list), do: Enum.sort(list)
 
   # Wait for messages from child processes
-  defp wait_for_messages(queue, spawned, waiting, files, result, warnings, state) do
+  defp wait_for_messages(queue, spawned, waiting, files, result, warnings, errors, state) do
     %{output: output} = state
 
     receive do
-      {:async, process} ->
-        Process.monitor(process)
-        wait_for_messages(queue, spawned + 1, waiting, files, result, warnings, state)
+      {:async, pid} ->
+        ref = Process.monitor(pid)
+        new_spawned = Map.put(spawned, ref, pid)
+        wait_for_messages(queue, new_spawned, waiting, files, result, warnings, errors, state)
 
       {:available, kind, module} ->
-        available =
-          for {^kind, _, ref, _, ^module, _defining, _deadlock} <- waiting,
-              do: {ref, :found}
+        {available, result} = update_result(result, kind, module, true)
 
-        result = Map.put(result, {kind, module}, true)
-        spawn_workers(available ++ queue, spawned, waiting, files, result, warnings, state)
+        spawn_workers(
+          available ++ queue,
+          spawned,
+          waiting,
+          files,
+          result,
+          warnings,
+          errors,
+          state
+        )
 
-      {:module_available, child, ref, file, module, binary, checker_info} ->
+      {:module_available, child, ref, file, module, binary} ->
         state.each_module.(file, module, binary)
 
         # Release the module loader which is waiting for an ack
         send(child, {ref, :ack})
 
-        available =
-          for {:module, _, ref, _, ^module, _defining, _deadlock} <- waiting,
-              do: {ref, :found}
+        {available, result} = update_result(result, :module, module, binary)
 
-        result = Map.put(result, {:module, module}, {binary, checker_info})
-        spawn_workers(available ++ queue, spawned, waiting, files, result, warnings, state)
+        spawn_workers(
+          available ++ queue,
+          spawned,
+          waiting,
+          files,
+          result,
+          warnings,
+          errors,
+          state
+        )
 
       # If we are simply requiring files, we do not add to waiting.
       {:waiting, _kind, child, ref, _file_pid, _on, _defining, _deadlock} when output == :require ->
         send(child, {ref, :not_found})
-        spawn_workers(queue, spawned, waiting, files, result, warnings, state)
+        spawn_workers(queue, spawned, waiting, files, result, warnings, errors, state)
 
       {:waiting, kind, child_pid, ref, file_pid, on, defining, deadlock?} ->
         # If we already got what we were waiting for, do not put it on waiting.
         # If we're waiting on ourselves, send :found so that we can crash with
         # a better error.
-        {files, waiting} =
-          if Map.has_key?(result, {kind, on}) or on in defining do
+        available_or_pending = Map.get(result, {kind, on}, [])
+
+        {waiting, files, result} =
+          if not is_list(available_or_pending) or on in defining do
             send(child_pid, {ref, :found})
-            {files, waiting}
+            {waiting, files, result}
           else
+            waiting = Map.put(waiting, child_pid, {kind, ref, file_pid, on, defining, deadlock?})
             files = update_timing(files, file_pid, :compiling)
-            {files, [{kind, child_pid, ref, file_pid, on, defining, deadlock?} | waiting]}
+            result = Map.put(result, {kind, on}, [child_pid | available_or_pending])
+            {waiting, files, result}
           end
 
-        spawn_workers(queue, spawned, waiting, files, result, warnings, state)
+        spawn_workers(queue, spawned, waiting, files, result, warnings, errors, state)
 
       :threshold_check ->
         files =
           for data <- files do
-            if data.warned or List.keymember?(waiting, data.pid, 1) do
+            if data.warned or Map.has_key?(waiting, data.pid) do
               data
             else
               data = update_timing(data, :compiling)
@@ -583,61 +631,89 @@ defmodule Kernel.ParallelCompiler do
 
         timer_ref = Process.send_after(self(), :threshold_check, state.long_compilation_threshold)
         state = %{state | timer_ref: timer_ref}
-        spawn_workers(queue, spawned, waiting, files, result, warnings, state)
+        spawn_workers(queue, spawned, waiting, files, result, warnings, errors, state)
 
-      {:warning, file, location, message} ->
+      {:diagnostic, type, file, location, message} ->
         file = file && Path.absname(file)
         message = :unicode.characters_to_binary(message)
-        warning = {file, location, message}
-        wait_for_messages(queue, spawned, waiting, files, result, [warning | warnings], state)
+
+        case type do
+          :warning ->
+            warnings = [{file, location, message} | warnings]
+            wait_for_messages(queue, spawned, waiting, files, result, warnings, errors, state)
+
+          :error ->
+            errors = [{file, location, message} | errors]
+            wait_for_messages(queue, spawned, waiting, files, result, warnings, errors, state)
+        end
 
       {:file_ok, child_pid, ref, file, lexical} ->
         state.each_file.(file, lexical)
         send(child_pid, ref)
 
-        discard_down(child_pid)
-        new_files = discard_and_maybe_log_file(files, child_pid, state)
+        {file, new_spawned, new_files} = discard_file_pid(spawned, files, child_pid)
+        file && maybe_log_file_profile(file, state)
 
-        # Sometimes we may have spurious entries in the waiting list
-        # because someone invoked try/rescue UndefinedFunctionError
-        new_waiting = List.keydelete(waiting, child_pid, 1)
-        spawn_workers(queue, spawned - 1, new_waiting, new_files, result, warnings, state)
+        # We may have spurious entries in the waiting list
+        # if someone invoked try/rescue UndefinedFunctionError
+        new_waiting = Map.delete(waiting, child_pid)
+        spawn_workers(queue, new_spawned, new_waiting, new_files, result, warnings, errors, state)
 
       {:file_cancel, child_pid} ->
-        discard_down(child_pid)
-        new_files = Enum.reject(files, &(&1.pid == child_pid))
-        spawn_workers(queue, spawned - 1, waiting, new_files, result, warnings, state)
+        {_file, new_spawned, new_files} = discard_file_pid(spawned, files, child_pid)
+        spawn_workers(queue, new_spawned, waiting, new_files, result, warnings, errors, state)
 
       {:file_error, child_pid, file, {kind, reason, stack}} ->
         print_error(file, kind, reason, stack)
-        discard_down(child_pid)
-        files |> Enum.reject(&(&1.pid == child_pid)) |> terminate()
-        {{:error, [to_error(file, kind, reason, stack)], warnings}, state}
+        {_file, _new_spawned, new_files} = discard_file_pid(spawned, files, child_pid)
+        terminate(new_files)
+        {return_error([to_error(file, kind, reason, stack) | errors], warnings), state}
 
-      {:DOWN, ref, :process, pid, reason} ->
-        waiting = List.keydelete(waiting, pid, 1)
+      {:DOWN, ref, :process, pid, reason} when is_map_key(spawned, ref) ->
+        # async spawned processes have no file, so we always have to delete the ref directly
+        spawned = Map.delete(spawned, ref)
+        waiting = Map.delete(waiting, pid)
+        {file, spawned, files} = discard_file_pid(spawned, files, pid)
 
-        case handle_down(files, ref, reason) do
-          :ok -> wait_for_messages(queue, spawned - 1, waiting, files, result, warnings, state)
-          {:error, errors} -> {{:error, errors, warnings}, state}
+        if file do
+          print_error(file.file, :exit, reason, [])
+          terminate(files)
+          {return_error([to_error(file.file, :exit, reason, []) | errors], warnings), state}
+        else
+          wait_for_messages(queue, spawned, waiting, files, result, warnings, errors, state)
         end
     end
   end
 
+  defp return_error(errors, warnings) do
+    info = %{compile_warnings: Enum.reverse(warnings), runtime_warnings: []}
+    {:error, Enum.reverse(errors), info}
+  end
+
+  defp update_result(result, kind, module, value) do
+    available =
+      case Map.get(result, {kind, module}) do
+        [_ | _] = pids -> Enum.map(pids, &{&1, :found})
+        _ -> []
+      end
+
+    {available, Map.put(result, {kind, module}, value)}
+  end
+
   defp update_timing(files, pid, key) do
     Enum.map(files, fn data ->
-      if data.pid == pid do
-        time = System.monotonic_time()
-        %{data | key => data[key] + time - data.timestamp, timestamp: time}
-      else
-        data
-      end
+      if data.pid == pid, do: update_timing(data, key), else: data
     end)
   end
 
-  defp update_timing(data, key) do
+  defp update_timing(data, :compiling) do
     time = System.monotonic_time()
-    %{data | key => data[key] + time - data.timestamp, timestamp: time}
+    %{data | compiling: data.compiling + time - data.timestamp, timestamp: time}
+  end
+
+  defp update_timing(data, {:waiting, kind, on}) do
+    time = System.monotonic_time()
+    %{data | waiting: [{kind, on, time - data.timestamp} | data.waiting], timestamp: time}
   end
 
   defp maybe_warn_long_compilation(data, state) do
@@ -651,29 +727,53 @@ defmodule Kernel.ParallelCompiler do
     end
   end
 
-  defp discard_and_maybe_log_file(files, pid, state) do
-    Enum.reject(files, fn data ->
-      if data.pid == pid do
-        data = update_timing(data, :compiling)
-        data = maybe_warn_long_compilation(data, state)
+  defp discard_file_pid(spawned, files, pid) do
+    case Enum.split_with(files, &(&1.pid == pid)) do
+      {[file], files} ->
+        Process.demonitor(file.ref, [:flush])
+        {file, Map.delete(spawned, file.ref), files}
 
-        if state.profile != :none do
-          compiling = to_padded_ms(data.compiling)
-          waiting = to_padded_ms(data.waiting)
-          relative = Path.relative_to_cwd(data.file)
+      {[], files} ->
+        {nil, spawned, files}
+    end
+  end
 
-          IO.puts(
-            :stderr,
-            "[profile] #{compiling}ms compiling + #{waiting}ms waiting for #{relative}"
-          )
+  defp maybe_log_file_profile(data, state) do
+    data = update_timing(data, :compiling)
+    data = maybe_warn_long_compilation(data, state)
+
+    if state.profile != :none do
+      compiling = to_padded_ms(data.compiling)
+      relative = Path.relative_to_cwd(data.file)
+
+      messages =
+        case List.pop_at(data.waiting, 0) do
+          {nil, []} ->
+            "[profile] #{compiling}ms compiling +      0ms waiting while compiling #{relative}"
+
+          {{kind, on, time}, rest} ->
+            initial_message = [
+              "[profile] #{compiling}ms compiling + ",
+              format_waiting_message(time, kind, on, relative)
+            ]
+
+            waiting_details =
+              Enum.map(rest, fn {kind, on, time} ->
+                [
+                  "\n[profile]                    | ",
+                  format_waiting_message(time, kind, on, relative)
+                ]
+              end)
+
+            [initial_message | waiting_details]
         end
 
-        true
-      else
-        false
-      end
-    end)
+      IO.puts(:stderr, messages)
+    end
   end
+
+  defp format_waiting_message(time, kind, on, relative),
+    do: "#{to_padded_ms(time)}ms waiting for #{kind} #{inspect(on)} while compiling #{relative}"
 
   defp to_padded_ms(time) do
     time
@@ -682,42 +782,20 @@ defmodule Kernel.ParallelCompiler do
     |> String.pad_leading(6, " ")
   end
 
-  defp discard_down(pid) do
-    receive do
-      {:DOWN, _, :process, ^pid, _} -> :ok
-    end
-  end
-
-  defp handle_down(_files, _ref, :normal) do
-    :ok
-  end
-
-  defp handle_down(files, ref, reason) do
-    case Enum.find(files, &(&1.ref == ref)) do
-      %{pid: pid, file: file} ->
-        print_error(file, :exit, reason, [])
-        files |> Enum.reject(&(&1.pid == pid)) |> terminate()
-        {:error, [to_error(file, :exit, reason, [])]}
-
-      nil ->
-        :ok
-    end
-  end
-
   defp handle_deadlock(waiting, files) do
     deadlock =
       for %{pid: pid, file: file} <- files do
         {:current_stacktrace, stacktrace} = Process.info(pid, :current_stacktrace)
         Process.exit(pid, :kill)
 
-        {kind, ^pid, _, _, on, _, _} = List.keyfind(waiting, pid, 1)
+        {kind, _, _, on, _, _} = Map.fetch!(waiting, pid)
         description = "deadlocked waiting on #{kind} #{inspect(on)}"
         error = CompileError.exception(description: description, file: nil, line: nil)
         print_error(file, :error, error, stacktrace)
         {Path.relative_to_cwd(file), on, description}
       end
 
-    IO.puts("""
+    IO.puts(:stderr, """
 
     Compilation failed because of a deadlock between files.
     The following files depended on the following modules:
@@ -729,10 +807,11 @@ defmodule Kernel.ParallelCompiler do
       |> Enum.max()
 
     for {file, mod, _} <- deadlock do
-      IO.puts(["  ", String.pad_leading(file, max), " => " | inspect(mod)])
+      IO.puts(:stderr, ["  ", String.pad_leading(file, max), " => " | inspect(mod)])
     end
 
     IO.puts(
+      :stderr,
       "\nEnsure there are no compile-time dependencies between those files " <>
         "and that the modules they reference exist and are correctly named\n"
     )
@@ -742,12 +821,18 @@ defmodule Kernel.ParallelCompiler do
 
   defp terminate(files) do
     for %{pid: pid} <- files, do: Process.exit(pid, :kill)
-    for %{pid: pid} <- files, do: discard_down(pid)
+
+    for %{pid: pid} <- files do
+      receive do
+        {:DOWN, _, :process, ^pid, _} -> :ok
+      end
+    end
+
     :ok
   end
 
   defp print_error(file, kind, reason, stack) do
-    IO.write([
+    IO.write(:stderr, [
       "\n== Compilation error in file #{Path.relative_to_cwd(file)} ==\n",
       Kernel.CLI.format_error(kind, reason, stack)
     ])
@@ -760,6 +845,11 @@ defmodule Kernel.ParallelCompiler do
     {file, line || 0, message}
   end
 
+  defp get_line(_file, %{line: line, column: column}, _stack)
+       when is_integer(line) and line > 0 and is_integer(column) and column >= 0 do
+    {line, column}
+  end
+
   defp get_line(_file, %{line: line}, _stack) when is_integer(line) and line > 0 do
     line
   end
@@ -770,7 +860,8 @@ defmodule Kernel.ParallelCompiler do
     end
   end
 
-  defp get_line(file, _reason, [{_, _, _, [file: 'expanding macro']}, {_, _, _, info} | _]) do
+  defp get_line(file, _reason, [{_, _, _, [file: expanding]}, {_, _, _, info} | _])
+       when expanding in [~c"expanding macro", ~c"expanding struct"] do
     if Keyword.get(info, :file) == to_charlist(Path.relative_to_cwd(file)) do
       Keyword.get(info, :line)
     end

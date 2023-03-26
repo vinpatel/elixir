@@ -140,25 +140,25 @@ defmodule Module.Types.PatternTest do
     end
 
     test "struct" do
-      assert quoted_pattern(%:"Elixir.Module.Types.PatternTest.Struct"{}) ==
-               {:ok,
-                {:map,
-                 [
-                   {:required, {:atom, :__struct__}, {:atom, Module.Types.PatternTest.Struct}},
-                   {:required, {:atom, :bar}, :dynamic},
-                   {:required, {:atom, :baz}, :dynamic},
-                   {:required, {:atom, :foo}, :dynamic}
-                 ]}}
+      assert {:ok, {:map, fields}} = quoted_pattern(%:"Elixir.Module.Types.PatternTest.Struct"{})
 
-      assert quoted_pattern(%:"Elixir.Module.Types.PatternTest.Struct"{foo: 123, bar: :atom}) ==
-               {:ok,
-                {:map,
-                 [
-                   {:required, {:atom, :foo}, :integer},
-                   {:required, {:atom, :bar}, {:atom, :atom}},
-                   {:required, {:atom, :__struct__}, {:atom, Module.Types.PatternTest.Struct}},
-                   {:required, {:atom, :baz}, :dynamic}
-                 ]}}
+      assert Enum.sort(fields) == [
+               {:required, {:atom, :__struct__}, {:atom, Module.Types.PatternTest.Struct}},
+               {:required, {:atom, :bar}, :dynamic},
+               {:required, {:atom, :baz}, :dynamic},
+               {:required, {:atom, :foo}, :dynamic}
+             ]
+
+      assert {:ok, {:map, fields}} =
+               quoted_pattern(%:"Elixir.Module.Types.PatternTest.Struct"{foo: 123, bar: :atom})
+
+      assert Enum.sort(fields) ==
+               [
+                 {:required, {:atom, :__struct__}, {:atom, Module.Types.PatternTest.Struct}},
+                 {:required, {:atom, :bar}, {:atom, :atom}},
+                 {:required, {:atom, :baz}, :dynamic},
+                 {:required, {:atom, :foo}, :integer}
+               ]
     end
 
     test "struct var" do
@@ -186,16 +186,20 @@ defmodule Module.Types.PatternTest do
                  ]}}
     end
 
+    defmacrop custom_type do
+      quote do: 1 * 8 - big - signed - integer
+    end
+
     test "binary" do
       assert quoted_pattern(<<"foo"::binary>>) == {:ok, :binary}
       assert quoted_pattern(<<123::integer>>) == {:ok, :binary}
       assert quoted_pattern(<<foo::little>>) == {:ok, :binary}
       assert quoted_pattern(<<foo::integer>>) == {:ok, :binary}
-      assert quoted_pattern(<<foo::integer()>>) == {:ok, :binary}
       assert quoted_pattern(<<foo::integer-little>>) == {:ok, :binary}
       assert quoted_pattern(<<foo::little-integer>>) == {:ok, :binary}
       assert quoted_pattern(<<123::utf8>>) == {:ok, :binary}
       assert quoted_pattern(<<"foo"::utf8>>) == {:ok, :binary}
+      assert quoted_pattern(<<foo::custom_type()>>) == {:ok, :binary}
 
       assert quoted_pattern({<<foo::integer>>, foo}) == {:ok, {:tuple, 2, [:binary, :integer]}}
       assert quoted_pattern({<<foo::binary>>, foo}) == {:ok, {:tuple, 2, [:binary, :binary]}}
@@ -222,7 +226,6 @@ defmodule Module.Types.PatternTest do
 
       assert quoted_pattern(x = y = 123) == {:ok, :integer}
       assert quoted_pattern(x = 123 = y) == {:ok, :integer}
-      assert quoted_pattern(123 = x = y) == {:ok, :integer}
 
       assert {:error, {:unable_unify, {{:tuple, 1, [var: 0]}, {:var, 0}, _}}} =
                quoted_pattern({x} = x)
@@ -296,15 +299,6 @@ defmodule Module.Types.PatternTest do
 
       assert quoted_head([x], [is_atom(x) > :foo]) == {:ok, [var: 0]}
 
-      assert quoted_head([x, x = y, y = z], [is_atom(x)]) ==
-               {:ok, [:atom, :atom, :atom]}
-
-      assert quoted_head([x = y, y, y = z], [is_atom(y)]) ==
-               {:ok, [:atom, :atom, :atom]}
-
-      assert quoted_head([x = y, y = z, z], [is_atom(z)]) ==
-               {:ok, [:atom, :atom, :atom]}
-
       assert quoted_head([x, y], [is_atom(x) or is_integer(y)]) ==
                {:ok, [{:var, 0}, {:var, 1}]}
 
@@ -319,15 +313,6 @@ defmodule Module.Types.PatternTest do
 
       assert quoted_head([x, y], [is_atom(y) or is_integer(y)]) ==
                {:ok, [{:var, 0}, {:union, [:atom, :integer]}]}
-
-      assert quoted_head([x = y], [is_atom(y) or is_integer(y)]) ==
-               {:ok, [{:union, [:atom, :integer]}]}
-
-      assert quoted_head([x = y], [is_atom(x) or is_integer(x)]) ==
-               {:ok, [{:union, [:atom, :integer]}]}
-
-      assert quoted_head([x = y], [is_atom(x) or is_integer(x)]) ==
-               {:ok, [{:union, [:atom, :integer]}]}
 
       assert quoted_head([x], [true == false or is_integer(x)]) ==
                {:ok, [var: 0]}
@@ -355,13 +340,13 @@ defmodule Module.Types.PatternTest do
              ) == {:ok, [{:map, [{:optional, :dynamic, :dynamic}]}]}
     end
 
-    test "interesection functions" do
+    test "intersection functions" do
       assert quoted_head([x], [+x]) == {:ok, [{:union, [:integer, :float]}]}
       assert quoted_head([x], [x + 1]) == {:ok, [{:union, [:float, :integer]}]}
       assert quoted_head([x], [x + 1.0]) == {:ok, [{:union, [:integer, :float]}]}
     end
 
-    test "nested calls with interesections in guards" do
+    test "nested calls with intersections in guards" do
       assert quoted_head([x], [:erlang.rem(x, 2)]) == {:ok, [:integer]}
       assert quoted_head([x], [:erlang.rem(x + x, 2)]) == {:ok, [:integer]}
 

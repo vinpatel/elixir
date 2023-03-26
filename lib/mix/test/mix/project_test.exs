@@ -103,10 +103,6 @@ defmodule Mix.ProjectTest do
     assert is_nil(Mix.Project.config()[:app_path])
   end
 
-  test "retrieves configuration even when a project is not set" do
-    assert Mix.Project.config()[:default_task] == "run"
-  end
-
   test "raises an error when trying to retrieve the current project but none is set" do
     assert_raise Mix.NoProjectError, fn ->
       Mix.Project.get!()
@@ -118,7 +114,7 @@ defmodule Mix.ProjectTest do
       config = [app_path: Path.expand("_build/archive")]
       assert Mix.Project.build_structure(config) == :ok
       assert File.dir?("_build/archive/ebin")
-      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", '../../priv')
+      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", ~c"../../priv")
     end)
   end
 
@@ -137,13 +133,13 @@ defmodule Mix.ProjectTest do
       File.mkdir_p!("include")
 
       assert Mix.Project.build_structure(config, symlink_ebin: true) == :ok
-      assert_proj_dir_linked_or_copied("_build/archive/ebin", "ebin", '../../ebin')
-      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", '../../priv')
-      assert_proj_dir_linked_or_copied("_build/archive/include", "include", '../../include')
+      assert_proj_dir_linked_or_copied("_build/archive/ebin", "ebin", ~c"../../ebin")
+      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", ~c"../../priv")
+      assert_proj_dir_linked_or_copied("_build/archive/include", "include", ~c"../../include")
 
       assert Mix.Project.build_structure(config) == :ok
       assert File.dir?("_build/archive/ebin")
-      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", '../../priv')
+      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", ~c"../../priv")
     end)
   end
 
@@ -183,7 +179,7 @@ defmodule Mix.ProjectTest do
           # relative symlink on Windows are broken, see symlink_or_copy/2
           {:win32, _} ->
             assert path ==
-                     [source, '..', symlink_path]
+                     [source, ~c"..", symlink_path]
                      |> Path.join()
                      |> Path.expand()
                      |> String.to_charlist()

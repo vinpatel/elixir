@@ -35,7 +35,7 @@ defmodule RangeTest do
     assert Range.new(3, 1, -2) == 3..1//-2
   end
 
-  test "op" do
+  test "fields" do
     assert (1..3).first == 1
     assert (1..3).last == 3
     assert (1..3).step == 1
@@ -49,6 +49,18 @@ defmodule RangeTest do
 
     assert inspect(3..1) == "3..1//-1"
     assert inspect(3..1//1) == "3..1//1"
+  end
+
+  test "shift" do
+    assert Range.shift(0..10//2, 2) == 4..14//2
+    assert Range.shift(10..0//-2, 2) == 6..-4//-2
+    assert Range.shift(10..0//-2, -2) == 14..4//-2
+  end
+
+  test "in guard equality" do
+    case {1, 1..1} do
+      {n, range} when range == n..n -> true
+    end
   end
 
   test "limits are integer only" do
@@ -95,6 +107,88 @@ defmodule RangeTest do
       assert_overlap(-7..-5, -5..-1)
 
       assert Range.disjoint?(1..1, 1..1) == false
+    end
+  end
+
+  describe "split" do
+    @times 10
+
+    test "increasing ranges" do
+      for _ <- 1..@times do
+        left = Enum.random(-10..10)
+        right = Enum.random(-10..10)
+        input = min(left, right)..max(left, right)//Enum.random(1..3)
+
+        for split <- -3..3 do
+          {left, right} = Range.split(input, split)
+          assert input.first == left.first
+          assert input.last == right.last
+          assert input.step == left.step
+          assert input.step == right.step
+
+          assert Range.size(input) == Range.size(left) + Range.size(right),
+                 "size mismatch: Range.split(#{inspect(input)}, #{split})"
+        end
+      end
+    end
+
+    test "decreasing ranges" do
+      for _ <- 1..@times do
+        left = Enum.random(-10..10)
+        right = Enum.random(-10..10)
+        input = max(left, right)..min(left, right)//-Enum.random(1..3)
+
+        for split <- -3..3 do
+          {left, right} = Range.split(input, split)
+          assert input.first == left.first
+          assert input.last == right.last
+          assert input.step == left.step
+          assert input.step == right.step
+
+          assert Range.size(input) == Range.size(left) + Range.size(right),
+                 "size mismatch: Range.split(#{inspect(input)}, #{split})"
+        end
+      end
+    end
+
+    test "empty increasing ranges" do
+      for _ <- 1..@times,
+          left = Enum.random(-10..10),
+          right = Enum.random(-10..10),
+          left != right do
+        input = min(left, right)..max(left, right)//-Enum.random(1..3)
+
+        for split <- -3..3 do
+          {left, right} = Range.split(input, split)
+          assert input.first == left.first
+          assert input.last == right.last
+          assert input.step == left.step
+          assert input.step == right.step
+
+          assert Range.size(input) == Range.size(left) + Range.size(right),
+                 "size mismatch: Range.split(#{inspect(input)}, #{split})"
+        end
+      end
+    end
+
+    test "empty decreasing ranges" do
+      for _ <- 1..@times,
+          left = Enum.random(-10..10),
+          right = Enum.random(-10..10),
+          left != right do
+        input = max(left, right)..min(left, right)//Enum.random(1..3)
+
+        for split <- -3..3 do
+          {left, right} = Range.split(input, split)
+          assert input.first == left.first
+          assert input.last == right.last
+          assert input.step == left.step
+          assert input.step == right.step
+
+          assert Range.size(input) == Range.size(left) + Range.size(right),
+                 "size mismatch: Range.split(#{inspect(input)}, #{split})"
+        end
+      end
     end
   end
 

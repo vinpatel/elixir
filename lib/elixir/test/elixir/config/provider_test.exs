@@ -25,28 +25,43 @@ defmodule Config.ProviderTest do
   end
 
   test "validate_compile_env" do
-    Config.Provider.validate_compile_env([{:elixir, [:unknown], :error}])
+    assert Config.Provider.validate_compile_env([{:elixir, [:unknown], :error}]) == :ok
 
     Application.put_env(:elixir, :unknown, nested: [key: :value])
-    Config.Provider.validate_compile_env([{:elixir, [:unknown], {:ok, [nested: [key: :value]]}}])
-    Config.Provider.validate_compile_env([{:elixir, [:unknown, :nested], {:ok, [key: :value]}}])
-    Config.Provider.validate_compile_env([{:elixir, [:unknown, :nested, :key], {:ok, :value}}])
-    Config.Provider.validate_compile_env([{:elixir, [:unknown, :nested, :unknown], :error}])
 
-    assert capture_abort(fn ->
+    assert Config.Provider.validate_compile_env([
+             {:elixir, [:unknown], {:ok, [nested: [key: :value]]}}
+           ]) == :ok
+
+    assert Config.Provider.validate_compile_env([
+             {:elixir, [:unknown, :nested], {:ok, [key: :value]}}
+           ]) == :ok
+
+    assert Config.Provider.validate_compile_env([
+             {:elixir, [:unknown, :nested, :key], {:ok, :value}}
+           ]) == :ok
+
+    assert Config.Provider.validate_compile_env([{:elixir, [:unknown, :nested, :unknown], :error}]) ==
+             :ok
+
+    assert {:error, msg} =
              Config.Provider.validate_compile_env([{:elixir, [:unknown, :nested], :error}])
-           end) =~ "Compile time value was not set"
 
-    assert capture_abort(fn ->
+    assert msg =~ "Compile time value was not set"
+
+    assert {:error, msg} =
              Config.Provider.validate_compile_env([
                {:elixir, [:unknown, :nested], {:ok, :another}}
              ])
-           end) =~ "Compile time value was set to: :another"
 
-    assert capture_abort(fn ->
-             keys = [:unknown, :nested, :key, :too_deep]
+    assert msg =~ "Compile time value was set to: :another"
+
+    keys = [:unknown, :nested, :key, :too_deep]
+
+    assert {:error, msg} =
              Config.Provider.validate_compile_env([{:elixir, keys, :error}])
-           end) =~
+
+    assert msg =~
              "application :elixir failed reading its compile environment for path [:nested, :key, :too_deep] inside key :unknown"
   after
     Application.delete_env(:elixir, :unknown)
@@ -58,7 +73,7 @@ defmodule Config.ProviderTest do
       assert Provider.validate_config_path!({:system, "foo", "bar"}) == :ok
 
       assert_raise ArgumentError, fn -> Provider.validate_config_path!({:system, 1, 2}) end
-      assert_raise ArgumentError, fn -> Provider.validate_config_path!('baz') end
+      assert_raise ArgumentError, fn -> Provider.validate_config_path!(~c"baz") end
     end
 
     test "resolve!" do
@@ -82,11 +97,11 @@ defmodule Config.ProviderTest do
       assert config[:elixir] == [config_provider_booted: {:booted, nil}]
     end
 
-    @tag sys_config: [my_app: [encoding: {:time_μs, :"£", "£", '£'}]]
+    @tag sys_config: [my_app: [encoding: {:_μ, :"£", "£", ~c"£"}]]
     test "writes sys_config with encoding" do
       init_and_assert_boot()
       config = consult(@sys_config)
-      assert config[:my_app][:encoding] == {:time_μs, :"£", "£", '£'}
+      assert config[:my_app][:encoding] == {:_μ, :"£", "£", ~c"£"}
     end
 
     @tag sys_config: [my_app: [key: :old_value, sys_key: :sys_value, extra_config: :old_value]]
@@ -171,7 +186,7 @@ defmodule Config.ProviderTest do
   end
 
   defp capture_abort(fun) do
-    capture_io(:stderr, fn ->
+    capture_io(fn ->
       assert_raise ErlangError, fun
     end)
   end

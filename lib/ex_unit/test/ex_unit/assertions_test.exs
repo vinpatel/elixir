@@ -16,6 +16,23 @@ defmodule ExUnit.AssertionsTest.BrokenError do
   end
 end
 
+defmodule ExUnit.AssertionsTest.OverrideOperator do
+  import Kernel, except: [{:=~, 2}]
+
+  defmacro __using__(_) do
+    quote do
+      import Kernel, except: [{:=~, 2}]
+      import ExUnit.AssertionsTest.OverrideOperator
+    end
+  end
+
+  defmacro left =~ right do
+    quote do
+      match?(unquote(left), unquote(right))
+    end
+  end
+end
+
 alias ExUnit.AssertionsTest.{BrokenError, Value}
 
 defmodule ExUnit.AssertionsTest do
@@ -136,6 +153,15 @@ defmodule ExUnit.AssertionsTest do
     assert argless_macro == 1
   end
 
+  defmodule OperatorOverrideTest do
+    use ExUnit.Case
+    use ExUnit.AssertionsTest.OverrideOperator
+
+    test "assert when operator be overrode" do
+      assert [_a, _b] =~ [1, 2]
+    end
+  end
+
   test "refute when value is falsy" do
     false = refute false
     nil = refute Value.falsy()
@@ -175,6 +201,16 @@ defmodule ExUnit.AssertionsTest do
   after
     :code.delete(ExSample)
     :code.purge(ExSample)
+  end
+
+  test "assert match with quote on left-side" do
+    assert quote(do: x in Alias) = quote(do: x in Alias)
+  end
+
+  defmacro quote_like(ast), do: Macro.escape(ast, prune_metadata: true)
+
+  test "assert match with quote-like on left-side" do
+    assert quote_like(x in Alias) = quote_like(x in Alias)
   end
 
   test "assert match expands argument in match context" do
@@ -511,32 +547,32 @@ defmodule ExUnit.AssertionsTest do
   end
 
   test "assert in when member" do
-    true = assert 'foo' in ['foo', 'bar']
+    true = assert ~c"foo" in [~c"foo", ~c"bar"]
   end
 
   test "assert in when is not member" do
     try do
-      "This should never be tested" = assert 'foo' in 'bar'
+      "This should never be tested" = assert ~c"foo" in ~c"bar"
     rescue
       error in [ExUnit.AssertionError] ->
-        'foo' = error.left
-        'bar' = error.right
-        "assert 'foo' in 'bar'" = Macro.to_string(error.expr)
+        ~c"foo" = error.left
+        ~c"bar" = error.right
+        ~S(assert ~c"foo" in ~c"bar") = Macro.to_string(error.expr)
     end
   end
 
   test "refute in when is not member" do
-    false = refute 'baz' in ['foo', 'bar']
+    false = refute ~c"baz" in [~c"foo", ~c"bar"]
   end
 
   test "refute in when is member" do
     try do
-      "This should never be tested" = refute 'foo' in ['foo', 'bar']
+      "This should never be tested" = refute ~c"foo" in [~c"foo", ~c"bar"]
     rescue
       error in [ExUnit.AssertionError] ->
-        'foo' = error.left
-        ['foo', 'bar'] = error.right
-        "refute 'foo' in ['foo', 'bar']" = Macro.to_string(error.expr)
+        ~c"foo" = error.left
+        [~c"foo", ~c"bar"] = error.right
+        ~S(refute ~c"foo" in [~c"foo", ~c"bar"]) = Macro.to_string(error.expr)
     end
   end
 

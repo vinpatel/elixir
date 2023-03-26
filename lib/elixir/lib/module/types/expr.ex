@@ -151,16 +151,20 @@ defmodule Module.Types.Expr do
          dynamic_value_pairs =
            Enum.map(arg_pairs, fn {:required, key, _value} -> {:required, key, :dynamic} end),
          args_type = {:map, dynamic_value_pairs ++ [{:optional, :dynamic, :dynamic}]},
-         {:ok, type, context} <- unify(args_type, map_type, stack, context) do
+         {:ok, type, context} <- unify(map_type, args_type, stack, context) do
       # Retrieve map type and overwrite with the new value types from the map update
-      {:map, pairs} = resolve_var(type, context)
+      case resolve_var(type, context) do
+        {:map, pairs} ->
+          updated_pairs =
+            Enum.reduce(arg_pairs, pairs, fn {:required, key, value}, pairs ->
+              List.keyreplace(pairs, key, 1, {:required, key, value})
+            end)
 
-      updated_pairs =
-        Enum.reduce(arg_pairs, pairs, fn {:required, key, value}, pairs ->
-          List.keyreplace(pairs, key, 1, {:required, key, value})
-        end)
+          {:ok, {:map, updated_pairs}, context}
 
-      {:ok, {:map, updated_pairs}, context}
+        _ ->
+          {:ok, :dynamic, context}
+      end
     end
   end
 
@@ -213,6 +217,30 @@ defmodule Module.Types.Expr do
     case result do
       {:ok, expr_types, context} -> {:ok, Enum.at(expr_types, -1), context}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # cond do pat -> expr end
+  def of_expr({:cond, _meta, [[{:do, clauses}]]} = expr, _expected, stack, context) do
+    stack = push_expr_stack(expr, stack)
+
+    {result, context} =
+      reduce_ok(clauses, context, fn {:->, meta, [head, body]}, context = acc ->
+        case of_expr(head, :dynamic, stack, context) do
+          {:ok, _, context} ->
+            with {:ok, _expr_type, context} <- of_expr(body, :dynamic, stack, context) do
+              {:ok, keep_warnings(acc, context)}
+            end
+
+          error ->
+            # Skip the clause if it the head has an error
+            if meta[:generated], do: {:ok, acc}, else: error
+        end
+      end)
+
+    case result do
+      :ok -> {:ok, :dynamic, context}
+      :error -> {:error, context}
     end
   end
 

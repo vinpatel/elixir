@@ -243,31 +243,49 @@ defmodule CalendarTest do
         |> elem(month - 1)
       end
 
-      assert Calendar.strftime(%{month: 1}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 1}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "янв"
 
-      assert Calendar.strftime(%{month: 2}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 2}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "февр"
 
-      assert Calendar.strftime(%{month: 3}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 3}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "март"
 
-      assert Calendar.strftime(%{month: 4}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 4}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "апр"
 
-      assert Calendar.strftime(%{month: 5}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 5}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "май"
 
-      assert Calendar.strftime(%{month: 6}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 6}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "июнь"
 
-      assert Calendar.strftime(%{month: 7}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 7}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "июль"
 
-      assert Calendar.strftime(%{month: 8}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 8}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "авг"
 
-      assert Calendar.strftime(%{month: 9}, "%b", abbreviated_month_names: abbreviated_month_names) ==
+      assert Calendar.strftime(%{month: 9}, "%b",
+               abbreviated_month_names: abbreviated_month_names
+             ) ==
                "сент"
 
       assert Calendar.strftime(%{month: 10}, "%b",
@@ -311,6 +329,31 @@ defmodule CalendarTest do
 
     test "returns a single zero if there's no microseconds precision" do
       assert Calendar.strftime(~N[2019-08-15 17:07:57], "%f") == "0"
+    end
+
+    test "handles `0` both as padding and as part of a width" do
+      assert Calendar.strftime(~N[2019-08-15 17:07:57], "%10A") == "  Thursday"
+      assert Calendar.strftime(~N[2019-08-15 17:07:57], "%010A") == "00Thursday"
+    end
+
+    test "formats Epoch time with %s" do
+      assert Calendar.strftime(~N[2019-08-15 17:07:57], "%s") == "1565888877"
+
+      datetime = %DateTime{
+        year: 2019,
+        month: 8,
+        day: 15,
+        hour: 17,
+        minute: 7,
+        second: 57,
+        microsecond: {0, 0},
+        time_zone: "Europe/Berlin",
+        zone_abbr: "CET",
+        utc_offset: 3600,
+        std_offset: 0
+      }
+
+      assert Calendar.strftime(datetime, "%s") == "1565885277"
     end
 
     test "formats datetime with all options and modifiers" do
@@ -358,6 +401,13 @@ defmodule CalendarTest do
       assert_raise ArgumentError, "unknown option :unknown given to Calendar.strftime/3", fn ->
         Calendar.strftime(~D[2019-08-15], "%D", unknown: "option")
       end
+    end
+
+    test "zero padding for negative year" do
+      assert Calendar.strftime(Date.new!(-1, 1, 1), "%Y") == "-0001"
+      assert Calendar.strftime(Date.new!(-11, 1, 1), "%Y") == "-0011"
+      assert Calendar.strftime(Date.new!(-111, 1, 1), "%Y") == "-0111"
+      assert Calendar.strftime(Date.new!(-1111, 1, 1), "%Y") == "-1111"
     end
   end
 end

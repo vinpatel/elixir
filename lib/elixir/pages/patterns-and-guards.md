@@ -2,7 +2,7 @@
 
 Elixir provides pattern matching, which allows us to assert on the shape or extract values from data structures. Patterns are often augmented with guards, which give developers the ability to perform more complex checks, albeit limited.
 
-This page describes the semantics of patterns and guards, where they are all allowed, and how to extend them.
+This page provides a complete reference patterns and guards, their semantics, where they are allowed, and how to extend them.
 
 ## Patterns
 
@@ -28,7 +28,7 @@ Patterns are not bidirectional. If you have a variable `y` that was never assign
 
 ```iex
 iex> 1 = y
-** (CompileError) iex:2: undefined function y/0
+** (CompileError) iex:2: undefined variable "y"
 ```
 
 In other words, patterns are allowed only on the left side of `=`. The right side of `=` follows the regular evaluation semantics of the language.
@@ -244,7 +244,7 @@ User
 
 ### Binaries
 
-Binaries may appear in patterns using the double less-than/greater-than syntax ([`<<>>`](`<<>>/1`)). A binary in a pattern can match multiple segments at the same, each with different type, size, and unit:
+Binaries may appear in patterns using the double less-than/greater-than syntax ([`<<>>`](`<<>>/1`)). A binary in a pattern can match multiple segments at the same time, each with different type, size, and unit:
 
 ```iex
 iex> <<val::unit(8)-size(2)-integer>> = <<123, 56>>
@@ -284,6 +284,7 @@ You can find the built-in list of guards [in the `Kernel` module](Kernel.html#gu
   * [`in`](`in/2`) and [`not in`](`in/2`) operators (as long as the right-hand side is a list or a range)
   * "type-check" functions (`is_list/1`, `is_number/1`, and the like)
   * functions that work on built-in datatypes (`abs/1`, `hd/1`, `map_size/1`, and others)
+  * the `map.field` syntax
 
 The module `Bitwise` also includes a handful of [Erlang bitwise operations as guards](Bitwise.html#guards).
 
@@ -351,7 +352,7 @@ iex> case "hello" do
 
 In many cases, we can take advantage of this. In the code above, we used `tuple_size/1` to both check that the given value is a tuple *and* check its size (instead of using `is_tuple(something) and tuple_size(something) == 2`).
 
-However, if your guard has multiple conditions, such as checking for tuples or maps, it is best to call type-check functions like `is_tuple/1` before `tuple_size/1`, otherwise the whole guard will fail if a tuple is not given. Alternatively your function clause can use multiple guards as shown in the following section.
+However, if your guard has multiple conditions, such as checking for tuples or maps, it is best to call type-check functions like `is_tuple/1` before `tuple_size/1`, otherwise the whole guard will fail if a tuple is not given. Alternatively, your function clause can use multiple guards as shown in the following section.
 
 ### Multiple guards in the same clause
 
@@ -487,7 +488,7 @@ def my_function(number) when is_integer(number) and rem(number, 2) == 0 do
 end
 ```
 
-It would be repetitive to write every time we need this check. Instead you can use `defguard/1` and `defguardp/1` to create guard macros. Here's an example how:
+It would be repetitive to write every time we need this check. Instead, you can use `defguard/1` and `defguardp/1` to create guard macros. Here's an example how:
 
 ```elixir
 defmodule MyInteger do

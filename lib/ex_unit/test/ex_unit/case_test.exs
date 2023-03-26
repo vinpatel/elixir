@@ -112,6 +112,30 @@ defmodule ExUnit.CaseTest do
       end
     end
   end
+
+  test "raises when name is longer than 255 characters" do
+    assert_raise SystemLimitError,
+                 ~r/must be shorter than 255 characters, got: "test a{256}"/,
+                 fn ->
+                   defmodule LongNameTest do
+                     use ExUnit.Case
+
+                     test String.duplicate("a", 256)
+                   end
+                 end
+
+    assert_raise SystemLimitError,
+                 ~r/must be shorter than 255 characters, got: "test a{100} a{156}"/,
+                 fn ->
+                   defmodule LongDescribeNameTest do
+                     use ExUnit.Case
+
+                     describe String.duplicate("a", 100) do
+                       test String.duplicate("a", 156)
+                     end
+                   end
+                 end
+  end
 end
 
 defmodule ExUnit.DoubleCaseTest1 do
@@ -155,22 +179,80 @@ defmodule ExUnit.CaseTest.TmpDir do
 
   @moduletag :tmp_dir
 
+  defp ends_with_short_hash?(string) do
+    string
+    |> binary_slice(-9..-1)
+    |> String.starts_with?("-")
+  end
+
+  defp ends_with_short_hash_and_extra_path?(string, extra_path) do
+    extra_path = "/" <> extra_path
+    extra_path_length = String.length(extra_path)
+
+    case String.split_at(string, -extra_path_length) do
+      {tmp_dir_base, extra_path_new} when extra_path_new == extra_path ->
+        ends_with_short_hash?(tmp_dir_base)
+
+      _ ->
+        false
+    end
+  end
+
+  defp starts_with_path?(tmp_dir, path) do
+    String.starts_with?(tmp_dir, Path.expand(path))
+  end
+
   test "default path", context do
-    assert context.tmp_dir == Path.expand("tmp/ExUnit.CaseTest.TmpDir/test-default-path")
+    assert starts_with_path?(context.tmp_dir, "tmp/ExUnit.CaseTest.TmpDir/test-default-path-")
+    assert ends_with_short_hash?(context.tmp_dir)
     assert File.ls!(context.tmp_dir) == []
   end
 
   test "escapes foo?/0", context do
-    assert context.tmp_dir == Path.expand("tmp/ExUnit.CaseTest.TmpDir/test-escapes-foo--0")
+    assert starts_with_path?(context.tmp_dir, "tmp/ExUnit.CaseTest.TmpDir/test-escapes-foo--0-")
+    assert ends_with_short_hash?(context.tmp_dir)
   end
 
   @tag tmp_dir: "foo/bar"
   test "custom path", context do
-    assert context.tmp_dir == Path.expand("tmp/ExUnit.CaseTest.TmpDir/test-custom-path/foo/bar")
+    assert starts_with_path?(context.tmp_dir, "tmp/ExUnit.CaseTest.TmpDir/test-custom-path-")
+    assert ends_with_short_hash_and_extra_path?(context.tmp_dir, "foo/bar")
   end
 
   @tag tmp_dir: false
   test "disabled", context do
     refute context[:tmp_dir]
+  end
+
+  describe "colliding test names" do
+    test "foo-bar", context do
+      assert starts_with_path?(
+               context.tmp_dir,
+               "tmp/ExUnit.CaseTest.TmpDir/test-colliding-test-names-foo-bar-"
+             )
+
+      assert String.ends_with?(context.tmp_dir, "-2489e2ce")
+    end
+
+    test "foo+bar", context do
+      assert starts_with_path?(
+               context.tmp_dir,
+               "tmp/ExUnit.CaseTest.TmpDir/test-colliding-test-names-foo-bar-"
+             )
+
+      assert String.ends_with?(context.tmp_dir, "-9633ed5f")
+    end
+  end
+end
+
+defmodule ExUnit.BadOptsCase do
+  use ExUnit.Case, async: true
+
+  test "raises if passed something other than options" do
+    assert_raise ArgumentError, ~r/must be a list of options, got: "not a list of options"/, fn ->
+      defmodule MyBadCase do
+        use ExUnit.Case, "not a list of options"
+      end
+    end
   end
 end

@@ -21,7 +21,11 @@ defmodule KeywordTest do
   end
 
   test "implements (almost) all functions in Map" do
-    assert Map.__info__(:functions) -- Keyword.__info__(:functions) == [from_struct: 1]
+    assert Map.__info__(:functions) -- Keyword.__info__(:functions) == [
+             from_struct: 1,
+             intersect: 2,
+             intersect: 3
+           ]
   end
 
   test "get_and_update/3 raises on bad return value from the argument function" do
@@ -214,5 +218,18 @@ defmodule KeywordTest do
     assert_raise ArgumentError,
                  "expected the second argument to be a list of atoms or tuples, got: 3",
                  fn -> Keyword.validate([three: 3], [:three, 3, :two]) end
+  end
+
+  test "split_with/2" do
+    assert Keyword.split_with([], fn {_k, v} -> rem(v, 2) == 0 end) == {[], []}
+
+    assert Keyword.split_with([a: "1", a: 1, b: 2], fn {k, _v} -> k in [:a, :b] end) ==
+             {[a: "1", a: 1, b: 2], []}
+
+    assert Keyword.split_with([a: "1", a: 1, b: 2], fn {_k, v} -> v == 5 end) ==
+             {[], [a: "1", a: 1, b: 2]}
+
+    assert Keyword.split_with([a: "1", a: 1, b: 2], fn {k, v} -> k in [:a] and is_integer(v) end) ==
+             {[a: 1], [a: "1", b: 2]}
   end
 end

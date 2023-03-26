@@ -5,7 +5,7 @@ defmodule NaiveDateTime do
   The NaiveDateTime struct contains the fields year, month, day, hour,
   minute, second, microsecond and calendar. New naive datetimes can be
   built with the `new/2` and `new/8` functions or using the
-  `~N` (see `Kernel.sigil_N/2`) sigil:
+  `~N` (see `sigil_N/2`) sigil:
 
       iex> ~N[2000-01-01 23:00:07]
       ~N[2000-01-01 23:00:07]
@@ -46,8 +46,8 @@ defmodule NaiveDateTime do
 
   ## Using epochs
 
-  The `add/3` and `diff/3` functions can be used for computing with
-  date times or retrieving the number of seconds between instants.
+  The `add/3` and `diff/3` functions can be used for computing date
+  times or retrieving the number of seconds between instants.
   For example, if there is an interest in computing the number of
   seconds from the Unix epoch (1970-01-01 00:00:00):
 
@@ -356,10 +356,17 @@ defmodule NaiveDateTime do
   @doc """
   Adds a specified amount of time to a `NaiveDateTime`.
 
-  Accepts an `amount_to_add` in any `unit` available from `t:System.time_unit/0`.
-  Negative values will move backwards in time.
+  Accepts an `amount_to_add` in any `unit`. `unit` can be `:day`,
+  `:hour`, `:minute`, `:second` or any subsecond precision from
+  `t:System.time_unit/0`. It defaults to `:second`. Negative values
+  will move backwards in time.
+
+  This function always consider the unit to be computed according
+  to the `Calendar.ISO`.
 
   ## Examples
+
+  It uses seconds by default:
 
       # adds seconds by default
       iex> NaiveDateTime.add(~N[2014-10-02 00:29:10], 2)
@@ -369,18 +376,28 @@ defmodule NaiveDateTime do
       iex> NaiveDateTime.add(~N[2014-10-02 00:29:10], -2)
       ~N[2014-10-02 00:29:08]
 
-      # can work with other units
+  It can also work with subsecond precisions:
+
       iex> NaiveDateTime.add(~N[2014-10-02 00:29:10], 2_000, :millisecond)
-      ~N[2014-10-02 00:29:12]
+      ~N[2014-10-02 00:29:12.000]
 
-      # keeps the same precision
-      iex> NaiveDateTime.add(~N[2014-10-02 00:29:10.021], 21, :second)
-      ~N[2014-10-02 00:29:31.021]
+  As well as days/hours/minutes:
 
-      # changes below the precision will not be visible
-      iex> hidden = NaiveDateTime.add(~N[2014-10-02 00:29:10], 21, :millisecond)
-      iex> hidden.microsecond # ~N[2014-10-02 00:29:10]
-      {21000, 0}
+      iex> NaiveDateTime.add(~N[2015-02-28 00:29:10], 2, :day)
+      ~N[2015-03-02 00:29:10]
+      iex> NaiveDateTime.add(~N[2015-02-28 00:29:10], 36, :hour)
+      ~N[2015-03-01 12:29:10]
+      iex> NaiveDateTime.add(~N[2015-02-28 00:29:10], 60, :minute)
+      ~N[2015-02-28 01:29:10]
+
+  This operation merges the precision of the naive date time with the given unit:
+
+      iex> result = NaiveDateTime.add(~N[2014-10-02 00:29:10], 21, :millisecond)
+      ~N[2014-10-02 00:29:10.021]
+      iex> result.microsecond
+      {21000, 3}
+
+  Operations on top of gregorian seconds or the Unix epoch are optimized:
 
       # from Gregorian seconds
       iex> NaiveDateTime.add(~N[0000-01-01 00:00:00], 63_579_428_950)
@@ -397,14 +414,29 @@ defmodule NaiveDateTime do
 
   """
   @doc since: "1.4.0"
-  @spec add(Calendar.naive_datetime(), integer, System.time_unit()) :: t
+  @spec add(Calendar.naive_datetime(), integer, :day | :hour | :minute | System.time_unit()) :: t
+  def add(naive_datetime, amount_to_add, unit \\ :second)
+
+  def add(naive_datetime, amount_to_add, :day) when is_integer(amount_to_add) do
+    add(naive_datetime, amount_to_add * 86400, :second)
+  end
+
+  def add(naive_datetime, amount_to_add, :hour) when is_integer(amount_to_add) do
+    add(naive_datetime, amount_to_add * 3600, :second)
+  end
+
+  def add(naive_datetime, amount_to_add, :minute) when is_integer(amount_to_add) do
+    add(naive_datetime, amount_to_add * 60, :second)
+  end
+
   def add(
         %{microsecond: {_, precision}, calendar: calendar} = naive_datetime,
         amount_to_add,
-        unit \\ :second
+        unit
       )
       when is_integer(amount_to_add) do
     ppd = System.convert_time_unit(86400, :second, unit)
+    precision = max(Calendar.ISO.time_unit_to_precision(unit), precision)
 
     naive_datetime
     |> to_iso_days()
@@ -415,10 +447,11 @@ defmodule NaiveDateTime do
   @doc """
   Subtracts `naive_datetime2` from `naive_datetime1`.
 
-  The answer can be returned in any `unit` available from `t:System.time_unit/0`.
+  The answer can be returned in any `:day`, `:hour`, `:minute`, or any `unit`
+  available from `t:System.time_unit/0`. The unit is measured according to
+  `Calendar.ISO` and defaults to `:second`.
 
-  This function returns the difference in seconds where seconds are measured
-  according to `Calendar.ISO`.
+  Fractional results are not supported and are truncated.
 
   ## Examples
 
@@ -426,24 +459,57 @@ defmodule NaiveDateTime do
       2
       iex> NaiveDateTime.diff(~N[2014-10-02 00:29:12], ~N[2014-10-02 00:29:10], :microsecond)
       2_000_000
+
+      iex> NaiveDateTime.diff(~N[2014-10-02 00:29:10.042], ~N[2014-10-02 00:29:10.021])
+      0
       iex> NaiveDateTime.diff(~N[2014-10-02 00:29:10.042], ~N[2014-10-02 00:29:10.021], :millisecond)
       21
+
       iex> NaiveDateTime.diff(~N[2014-10-02 00:29:10], ~N[2014-10-02 00:29:12])
       -2
       iex> NaiveDateTime.diff(~N[-0001-10-02 00:29:10], ~N[-0001-10-02 00:29:12])
       -2
 
-      # to Gregorian seconds
-      iex> NaiveDateTime.diff(~N[2014-10-02 00:29:10], ~N[0000-01-01 00:00:00])
-      63579428950
+  It can also compute the difference in days, hours, or minutes:
+
+      iex> NaiveDateTime.diff(~N[2014-10-10 00:29:10], ~N[2014-10-02 00:29:10], :day)
+      8
+      iex> NaiveDateTime.diff(~N[2014-10-02 12:29:10], ~N[2014-10-02 00:29:10], :hour)
+      12
+      iex> NaiveDateTime.diff(~N[2014-10-02 00:39:10], ~N[2014-10-02 00:29:10], :minute)
+      10
+
+  But it also rounds incomplete days to zero:
+
+      iex> NaiveDateTime.diff(~N[2014-10-10 00:29:09], ~N[2014-10-02 00:29:10], :day)
+      7
 
   """
   @doc since: "1.4.0"
-  @spec diff(Calendar.naive_datetime(), Calendar.naive_datetime(), System.time_unit()) :: integer
+  @spec diff(
+          Calendar.naive_datetime(),
+          Calendar.naive_datetime(),
+          :day | :hour | :minute | System.time_unit()
+        ) :: integer
+
+  def diff(naive_datetime1, naive_datetime2, unit \\ :second)
+
+  def diff(naive_datetime1, naive_datetime2, :day) do
+    diff(naive_datetime1, naive_datetime2, :second) |> div(86400)
+  end
+
+  def diff(naive_datetime1, naive_datetime2, :hour) do
+    diff(naive_datetime1, naive_datetime2, :second) |> div(3600)
+  end
+
+  def diff(naive_datetime1, naive_datetime2, :minute) do
+    diff(naive_datetime1, naive_datetime2, :second) |> div(60)
+  end
+
   def diff(
         %{calendar: calendar1} = naive_datetime1,
         %{calendar: calendar2} = naive_datetime2,
-        unit \\ :second
+        unit
       ) do
     if not Calendar.compatible_calendars?(calendar1, calendar2) do
       raise ArgumentError,
@@ -971,6 +1037,44 @@ defmodule NaiveDateTime do
   end
 
   @doc """
+  Returns true if the first `NaiveDateTime` is strictly earlier than the second.
+
+  ## Examples
+
+      iex> NaiveDateTime.before?(~N[2021-01-01 11:00:00], ~N[2022-02-02 11:00:00])
+      true
+      iex> NaiveDateTime.before?(~N[2021-01-01 11:00:00], ~N[2021-01-01 11:00:00])
+      false
+      iex> NaiveDateTime.before?(~N[2022-02-02 11:00:00], ~N[2021-01-01 11:00:00])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec before?(Calendar.naive_datetime(), Calendar.naive_datetime()) :: boolean()
+  def before?(naive_datetime1, naive_datetime2) do
+    compare(naive_datetime1, naive_datetime2) == :lt
+  end
+
+  @doc """
+  Returns true if the first `NaiveDateTime` is strictly later than the second.
+
+  ## Examples
+
+      iex> NaiveDateTime.after?(~N[2022-02-02 11:00:00], ~N[2021-01-01 11:00:00])
+      true
+      iex> NaiveDateTime.after?(~N[2021-01-01 11:00:00], ~N[2021-01-01 11:00:00])
+      false
+      iex> NaiveDateTime.after?(~N[2021-01-01 11:00:00], ~N[2022-02-02 11:00:00])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec after?(Calendar.naive_datetime(), Calendar.naive_datetime()) :: boolean()
+  def after?(naive_datetime1, naive_datetime2) do
+    compare(naive_datetime1, naive_datetime2) == :gt
+  end
+
+  @doc """
   Converts the given `naive_datetime` from one calendar to another.
 
   If it is not possible to convert unambiguously between the calendars
@@ -1063,6 +1167,67 @@ defmodule NaiveDateTime do
                 "reason: #{inspect(naive_datetime.calendar)} and #{inspect(calendar)} " <>
                 "have different day rollover moments, making this conversion ambiguous"
     end
+  end
+
+  @doc """
+  Calculates a `NaiveDateTime` that is the first moment for the given `NaiveDateTime`.
+
+  To calculate the beginning of day of a `DateTime`, call this function, then convert back to a `DateTime`:
+
+      datetime
+      |> NaiveDateTime.beginning_of_day()
+      |> DateTime.from_naive(datetime.timezone)
+
+  Note that the beginning of the day may not exist or be ambiguous
+  in a given timezone, so you must handle those cases accordingly.
+
+  ## Examples
+
+      iex> NaiveDateTime.beginning_of_day(~N[2000-01-01 23:00:07.123456])
+      ~N[2000-01-01 00:00:00.000000]
+
+  """
+  @doc since: "1.15.0"
+  @spec beginning_of_day(Calendar.naive_datetime()) :: t
+  def beginning_of_day(%{calendar: calendar, microsecond: {_, precision}} = naive_datetime) do
+    naive_datetime
+    |> to_iso_days()
+    |> calendar.iso_days_to_beginning_of_day()
+    |> from_iso_days(calendar, precision)
+  end
+
+  @doc """
+  Calculates a `NaiveDateTime` that is the last moment for the given `NaiveDateTime`.
+
+  To calculate the end of day of a `DateTime`, call this function, then convert back to a `DateTime`:
+
+      datetime
+      |> NaiveDateTime.beginning_of_day()
+      |> DateTime.from_naive(datetime.timezone)
+
+  Note that the end of the day may not exist or be ambiguous
+  in a given timezone, so you must handle those cases accordingly.
+
+  ## Examples
+
+      iex> NaiveDateTime.end_of_day(~N[2000-01-01 23:00:07.123456])
+      ~N[2000-01-01 23:59:59.999999]
+
+  """
+  @doc since: "1.15.0"
+  @spec end_of_day(Calendar.naive_datetime()) :: t
+  def end_of_day(%{calendar: calendar, microsecond: {_, precision}} = naive_datetime) do
+    end_of_day =
+      naive_datetime
+      |> to_iso_days()
+      |> calendar.iso_days_to_end_of_day()
+      |> from_iso_days(calendar, precision)
+
+    %{microsecond: {microsecond, precision}} = end_of_day
+
+    multiplier = 10 ** (6 - precision)
+
+    %{end_of_day | microsecond: {div(microsecond, multiplier) * multiplier, precision}}
   end
 
   ## Helpers

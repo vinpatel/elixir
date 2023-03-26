@@ -40,12 +40,18 @@ defmodule CodeTest do
                Code.eval_string("a = (try do (raise \"hello\") rescue e -> e end)")
     end
 
-    test "supports the :requires option" do
-      assert Code.eval_string("Kernel.if true, do: :ok", [], requires: [Z, Kernel]) == {:ok, []}
-    end
-
     test "returns bindings from a different context" do
       assert Code.eval_string("var!(a, Sample) = 1") == {1, [{{:a, Sample}, 1}]}
+    end
+
+    defmacro hygiene_var do
+      quote do
+        a = 1
+      end
+    end
+
+    test "does not return bindings from macro hygiene" do
+      assert Code.eval_string("require CodeTest; CodeTest.hygiene_var()") == {1, []}
     end
 
     test "does not raise on duplicate bindings" do
@@ -57,39 +63,35 @@ defmodule CodeTest do
                {"1", [{:c, 2}, {:b, "1"}, {:a, 1}]}
     end
 
-    test "with many options" do
-      options = [
-        functions: [{Kernel, [is_atom: 1]}],
-        macros: [{Kernel, [and: 2]}],
-        aliases: [{K, Kernel}],
-        requires: [Kernel]
-      ]
-
-      code = "is_atom(:foo) and K.is_list([])"
-      assert Code.eval_string(code, [], options) == {true, []}
-    end
-
-    test "yields the correct stacktrace" do
+    test "keeps caller in stacktrace" do
       try do
-        Code.eval_string("<<a::size(b)>>", a: :a, b: :b)
+        Code.eval_string("<<a::size(b)>>", [a: :a, b: :b], file: "myfile")
       rescue
         _ ->
           assert Enum.any?(__STACKTRACE__, &(elem(&1, 0) == __MODULE__))
       end
     end
 
-    test "raises streamlined argument errors" do
-      assert_raise ArgumentError,
-                   ~r"argument error while evaluating at line 1",
-                   fn -> Code.eval_string("a <> b", a: :a, b: :b) end
+    if System.otp_release() >= "25" do
+      test "includes eval file in stacktrace" do
+        try do
+          Code.eval_string("<<a::size(b)>>", [a: :a, b: :b], file: "myfile")
+        rescue
+          _ ->
+            assert Exception.format_stacktrace(__STACKTRACE__) =~ "myfile:1"
+        end
 
-      assert_raise ArgumentError,
-                   ~r"argument error while evaluating example.ex at line 1",
-                   fn -> Code.eval_string("a <> b", [a: :a, b: :b], file: "example.ex") end
-
-      assert_raise ArgumentError,
-                   ~r"argument error while evaluating example.ex between lines 1 and 2",
-                   fn -> Code.eval_string("a <>\nb", [a: :a, b: :b], file: "example.ex") end
+        try do
+          Code.eval_string(
+            "Enum.map([a: :a, b: :b], fn {a, b} -> <<a::size(b)>> end)",
+            [],
+            file: "myfile"
+          )
+        rescue
+          _ ->
+            assert Exception.format_stacktrace(__STACKTRACE__) =~ "myfile:1"
+        end
+      end
     end
 
     test "warns when lexical tracker process is dead" do
@@ -153,6 +155,78 @@ defmodule CodeTest do
     assert Macro.Env.fetch_alias(env, :MyDict) == {:ok, :dict}
   end
 
+  test "eval_quoted_with_env/3 with vars" do
+    env = Code.env_for_eval(__ENV__)
+    {1, [x: 1], env} = Code.eval_quoted_with_env(quote(do: var!(x) = 1), [], env)
+    assert Macro.Env.vars(env) == [{:x, nil}]
+  end
+
+  test "eval_quoted_with_env/3 with pruning" do
+    env = Code.env_for_eval(__ENV__)
+
+    fun = fn quoted, binding ->
+      {_, binding, env} = Code.eval_quoted_with_env(quoted, binding, env, prune_binding: true)
+      {binding, Macro.Env.vars(env)}
+    end
+
+    assert fun.(quote(do: 123), []) == {[], []}
+    assert fun.(quote(do: 123), x: 2, y: 3) == {[], []}
+
+    assert fun.(quote(do: var!(x) = 1), []) == {[x: 1], [x: nil]}
+    assert fun.(quote(do: var!(x) = 1), x: 2, y: 3) == {[x: 1], [x: nil]}
+
+    assert fun.(quote(do: var!(x, :foo) = 1), []) == {[{{:x, :foo}, 1}], [x: :foo]}
+    assert fun.(quote(do: var!(x, :foo) = 1), x: 2, y: 3) == {[{{:x, :foo}, 1}], [x: :foo]}
+
+    assert fun.(quote(do: var!(x, :foo) = 1), [{{:x, :foo}, 2}, {{:y, :foo}, 3}]) ==
+             {[{{:x, :foo}, 1}], [x: :foo]}
+
+    assert fun.(quote(do: fn -> var!(x, :foo) = 1 end), []) == {[], []}
+    assert fun.(quote(do: fn -> var!(x, :foo) = 1 end), x: 1, y: 2) == {[], []}
+
+    assert fun.(quote(do: fn -> var!(x) end), x: 2, y: 3) == {[x: 2], [x: nil]}
+
+    assert fun.(quote(do: fn -> var!(x, :foo) end), [{{:x, :foo}, 2}, {{:y, :foo}, 3}]) ==
+             {[{{:x, :foo}, 2}], [x: :foo]}
+  end
+
+  defmodule Tracer do
+    def trace(event, env) do
+      send(self(), {:trace, event, env})
+      :ok
+    end
+  end
+
+  test "eval_quoted_with_env/3 with tracing and pruning" do
+    env = %{Code.env_for_eval(__ENV__) | tracers: [Tracer], function: nil}
+    binding = [x: 1, y: 2, z: 3]
+
+    quoted =
+      quote do
+        defmodule Elixir.CodeTest.TracingPruning do
+          var!(y) = :updated
+          var!(y)
+          var!(x)
+        end
+      end
+
+    {_, binding, env} = Code.eval_quoted_with_env(quoted, binding, env, prune_binding: true)
+    assert Enum.sort(binding) == []
+    assert env.versioned_vars == %{}
+
+    assert_receive {:trace, {:on_module, _, _}, %{module: CodeTest.TracingPruning} = trace_env}
+    assert trace_env.versioned_vars == %{{:result, Kernel} => 5, {:x, nil} => 1, {:y, nil} => 4}
+  end
+
+  test "eval_quoted_with_env/3 with defguard" do
+    require Integer
+    env = Code.env_for_eval(__ENV__)
+    quoted = quote do: Integer.is_even(1)
+    {false, binding, env} = Code.eval_quoted_with_env(quoted, [], env, prune_binding: true)
+    assert binding == []
+    assert Macro.Env.vars(env) == []
+  end
+
   test "compile_file/1" do
     assert Code.compile_file(fixture_path("code_sample.exs")) == []
     refute fixture_path("code_sample.exs") in Code.required_files()
@@ -212,6 +286,12 @@ defmodule CodeTest do
     assert {1.23, []} = Code.string_to_quoted_with_comments!(1.23)
   end
 
+  test "string_to_quoted returns error on incomplete escaped string" do
+    assert Code.string_to_quoted("\"\\") ==
+             {:error,
+              {[line: 1, column: 3], "missing terminator: \" (for string starting at line 1)", ""}}
+  end
+
   test "compile source" do
     assert __MODULE__.__info__(:compile)[:source] == String.to_charlist(__ENV__.file)
   end
@@ -248,6 +328,10 @@ defmodule CodeTest do
     end
   end
 
+  test "format_string/2 returns empty iodata for empty string" do
+    assert Code.format_string!("") == []
+  end
+
   test "ensure_loaded?/1" do
     assert Code.ensure_loaded?(__MODULE__)
     refute Code.ensure_loaded?(Code.NoFile)
@@ -258,6 +342,30 @@ defmodule CodeTest do
 
     assert_raise ArgumentError, "could not load module Code.NoFile due to reason :nofile", fn ->
       Code.ensure_loaded!(Code.NoFile)
+    end
+  end
+
+  test "ensure_all_loaded/1" do
+    assert Code.ensure_all_loaded([__MODULE__]) == :ok
+    assert Code.ensure_all_loaded([__MODULE__, Kernel]) == :ok
+
+    assert {:error, [error]} = Code.ensure_all_loaded([__MODULE__, Code.NoFile, __MODULE__])
+    assert error == {Code.NoFile, :nofile}
+  end
+
+  test "ensure_all_loaded!/1" do
+    assert Code.ensure_all_loaded!([__MODULE__]) == :ok
+    assert Code.ensure_all_loaded!([__MODULE__, Kernel]) == :ok
+
+    message = """
+    could not load the following modules:
+
+      * Code.NoFile due to reason :nofile
+      * Code.OtherNoFile due to reason :nofile\
+    """
+
+    assert_raise ArgumentError, message, fn ->
+      Code.ensure_all_loaded!([__MODULE__, Code.NoFile, Code.OtherNoFile])
     end
   end
 
@@ -287,6 +395,17 @@ defmodule CodeTest do
       Code.put_compiler_option(:debug_info, :not_a_boolean)
     end
   end
+
+  describe "fetch_docs/1" do
+    test "is case sensitive" do
+      assert {:docs_v1, _, :elixir, _, %{"en" => module_doc}, _, _} = Code.fetch_docs(IO)
+
+      assert "Functions handling input/output (IO)." =
+               module_doc |> String.split("\n") |> Enum.at(0)
+
+      assert Code.fetch_docs(Io) == {:error, :module_not_found}
+    end
+  end
 end
 
 defmodule Code.SyncTest do
@@ -294,12 +413,39 @@ defmodule Code.SyncTest do
 
   import PathHelpers
 
-  test "path manipulation" do
+  test "prepend_path" do
     path = Path.join(__DIR__, "fixtures")
-    Code.prepend_path(path)
+    true = Code.prepend_path(path)
     assert to_charlist(path) in :code.get_path()
 
     Code.delete_path(path)
+    refute to_charlist(path) in :code.get_path()
+  end
+
+  test "append_path" do
+    path = Path.join(__DIR__, "fixtures")
+    true = Code.append_path(path)
+    assert to_charlist(path) in :code.get_path()
+
+    Code.delete_path(path)
+    refute to_charlist(path) in :code.get_path()
+  end
+
+  test "prepend_paths" do
+    path = Path.join(__DIR__, "fixtures")
+    :ok = Code.prepend_paths([path])
+    assert to_charlist(path) in :code.get_path()
+
+    Code.delete_paths([path])
+    refute to_charlist(path) in :code.get_path()
+  end
+
+  test "append_paths" do
+    path = Path.join(__DIR__, "fixtures")
+    :ok = Code.append_paths([path])
+    assert to_charlist(path) in :code.get_path()
+
+    Code.delete_paths([path])
     refute to_charlist(path) in :code.get_path()
   end
 

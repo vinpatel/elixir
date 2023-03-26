@@ -2,8 +2,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 eval(Content) ->
-  {Value, Binding, _} =
-    elixir:eval_forms(elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []), [], []),
+  Quoted = elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []),
+  {Value, Binding, _} = elixir:eval_forms(Quoted, [], elixir:env_for_eval([])),
   {Value, lists:sort(Binding)}.
 
 function_arg_do_end_test() ->
@@ -67,7 +67,7 @@ function_call_without_arg_test() ->
   {3, _} = eval("x = fn -> 2 + 1 end\nx.()").
 
 function_call_do_end_test() ->
-  {[1, [{do, 2}, {else, 3}]], _} = eval("x = fn a, b -> [a, b] end\nx.(1) do\n2\nelse 3\nend").
+  {[1, [{do, 2}, {'else', 3}]], _} = eval("x = fn a, b -> [a, b] end\nx.(1) do\n2\nelse 3\nend").
 
 function_call_with_assignment_test() ->
   {3, [{a, _}, {c, 3}]} = eval("a = fn x -> x + 2 end; c = a.(1)").

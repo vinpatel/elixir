@@ -27,7 +27,7 @@ defmodule Mix.Tasks.Escript.Build do
   life-cycles.
 
   All of the configuration defined in `config/config.exs` will
-  be included as part of the escript. `config/runtime.exs`is also
+  be included as part of the escript. `config/runtime.exs` is also
   included for Elixir escripts. Once the configuration is loaded,
   this task starts the current application. If this is not desired,
   set the `:app` configuration to nil.
@@ -36,7 +36,9 @@ defmodule Mix.Tasks.Escript.Build do
   the compiled `.beam` files to reduce the size of the escript.
   If this is not desired, check the `:strip_beams` option.
 
-  > Note: escripts do not support projects and dependencies
+  > #### `priv` directory support {: .warning}
+  >
+  > escripts do not support projects and dependencies
   > that need to store or read artifacts from the priv directory.
 
   ## Command line options
@@ -101,27 +103,31 @@ defmodule Mix.Tasks.Escript.Build do
 
   ## Example
 
-      defmodule MyApp.MixProject do
-        use Mix.Project
+  * `mix.exs`:
 
-        def project do
-          [
-            app: :my_app,
-            version: "0.0.1",
-            escript: escript()
-          ]
+        defmodule MyApp.MixProject do
+          use Mix.Project
+
+          def project do
+            [
+              app: :my_app,
+              version: "0.0.1",
+              escript: escript()
+            ]
+          end
+
+          def escript do
+            [main_module: MyApp.CLI]
+          end
         end
 
-        def escript do
-          [main_module: MyApp.CLI]
-        end
-      end
+  * `lib/cli.ex`:
 
-      defmodule MyApp.CLI do
-        def main(_args) do
-          IO.puts("Hello from MyApp!")
+        defmodule MyApp.CLI do
+          def main(_args) do
+            IO.puts("Hello from MyApp!")
+          end
         end
-      end
 
   """
 
@@ -188,8 +194,8 @@ defmodule Mix.Tasks.Escript.Build do
     tuples = gen_main(project, escript_mod, main, app, language) ++ read_beams(beam_paths)
     tuples = if strip_options, do: strip_beams(tuples, strip_options), else: tuples
 
-    case :zip.create('mem', tuples, [:memory]) do
-      {:ok, {'mem', zip}} ->
+    case :zip.create(~c"mem", tuples, [:memory]) do
+      {:ok, {~c"mem", zip}} ->
         shebang = escript_opts[:shebang] || "#! /usr/bin/env escript\n"
         comment = build_comment(escript_opts[:comment])
         emu_args = build_emu_args(escript_opts[:emu_args], escript_mod)
@@ -264,7 +270,7 @@ defmodule Mix.Tasks.Escript.Build do
   end
 
   defp app_files(app) do
-    case :code.where_is_file('#{app}.app') do
+    case :code.where_is_file(~c"#{app}.app") do
       :non_existing -> Mix.raise("Could not find application #{app}")
       file -> get_files(Path.dirname(Path.dirname(file)))
     end
@@ -366,7 +372,7 @@ defmodule Mix.Tasks.Escript.Build do
               formatted_error =
                 case :code.ensure_loaded(Application) do
                   {:module, Application} -> Application.format_error(reason)
-                  {:error, _} -> :io_lib.format('~p', [reason])
+                  {:error, _} -> :io_lib.format(~c"~p", [reason])
                 end
 
               error_message = [
@@ -388,7 +394,7 @@ defmodule Mix.Tasks.Escript.Build do
       end
 
     {:module, ^name, binary, _} = Module.create(name, module_body, Macro.Env.location(__ENV__))
-    [{'#{name}.beam', binary}]
+    [{~c"#{name}.beam", binary}]
   end
 
   defp main_body_for(:elixir, module, app, compile_config, runtime_config) do
@@ -420,7 +426,7 @@ defmodule Mix.Tasks.Escript.Build do
           Kernel.CLI.run(fn _ -> unquote(module).main(args) end)
 
         error ->
-          io_error(["ERROR! Failed to start Elixir.\n", :io_lib.format('error: ~p~n', [error])])
+          io_error(["ERROR! Failed to start Elixir.\n", :io_lib.format(~c"error: ~p~n", [error])])
           :erlang.halt(1)
       end
     end

@@ -8,12 +8,12 @@ Elixir applies bug fixes only to the latest minor branch. Security patches are a
 
 Elixir version | Support
 :------------- | :-----------------------------
-1.14           | Development
-1.13           | Bug fixes and security patches
+1.15           | Development
+1.14           | Bug fixes and security patches
+1.13           | Security patches only
 1.12           | Security patches only
 1.11           | Security patches only
 1.10           | Security patches only
-1.9            | Security patches only
 
 New releases are announced in the read-only [announcements mailing list](https://groups.google.com/group/elixir-lang-ann). All security releases [will be tagged with `[security]`](https://groups.google.com/forum/#!searchin/elixir-lang-ann/%5Bsecurity%5D%7Csort:date).
 
@@ -43,8 +43,9 @@ Erlang/OTP versioning is independent from the versioning of Elixir. Erlang relea
 
 Elixir version | Supported Erlang/OTP versions
 :------------- | :-------------------------------
-1.14           | 23 - 24
-1.13           | 22 - 24
+1.15           | 24 - 26
+1.14           | 23 - 25
+1.13           | 22 - 24 (and Erlang/OTP 25 from v1.13.4)
 1.12           | 22 - 24
 1.11           | 21 - 23 (and Erlang/OTP 24 from v1.11.4)
 1.10           | 21 - 22 (and Erlang/OTP 23 from v1.10.3)
@@ -79,11 +80,17 @@ The first column is the version the feature was hard deprecated. The second colu
 
 Version | Deprecated feature                                  | Replaced by (available since)
 :-------| :-------------------------------------------------- | :---------------------------------------------------------------
+[v1.15] | `Calendar.ISO.day_of_week/3`                        | `Calendar.ISO.day_of_week/4` (v1.11)
+[v1.15] | `Exception.exception?/1`                            | `Kernel.is_exception/1` (v1.11)
+[v1.15] | `Regex.regex?/1`                                    | `Kernel.is_struct/2` (v1.11)
+[v1.15] | `Logger.warn/2`                                     | `Logger.warning/2` (v1.11)
 [v1.14] | `use Bitwise`                                       | `import Bitwise` (v1.0)
 [v1.14] | `~~~/1`                                             | `bnot/2` (v1.0)
 [v1.14] | `Application.get_env/3` and similar in module body  | `Application.compile_env/3` (v1.10)
 [v1.14] | Compiled patterns in `String.starts_with?/2`        | Pass a list of strings instead (v1.0)
 [v1.14] | `Mix.Tasks.Xref.calls/1`                            | Compilation tracers (outlined in `Code`) (v1.10)
+[v1.14] | `$levelpad` in Logger                               | *None*
+[v1.14] | `<\|>` as a custom operator                         | Another custom operator (v1.0)
 [v1.13] | `!` and `!=` in Version requirements                | `~>` or `>=` (v1.0)
 [v1.13] | `Mix.Config`                                        | `Config` (v1.9)
 [v1.13] | `:strip_beam` config to `mix escript.build`         | `:strip_beams` (v1.9)
@@ -109,9 +116,9 @@ Version | Deprecated feature                                  | Replaced by (ava
 [v1.9]  | Enumerable keys in `Map.drop/2`, `Map.split/2`, and `Map.take/2` | Call `Enum.to_list/1` on the second argument before hand (v1.0)
 [v1.9]  | `Mix.Project.load_paths/1`                          | `Mix.Project.compile_path/1` (v1.0)
 [v1.9]  | Passing `:insert_replaced` to `String.replace/4`    | Use `:binary.replace/4` (v1.0)
-[v1.8]  | Passing a non-empty list to `Collectable.into/1`    | `Kernel.++/2` or `Keyword.merge/2` (v1.0)
-[v1.8]  | Passing a non-empty list to `:into` in [`for`](`Kernel.SpecialForms.for/1`) | `Kernel.++/2` or `Keyword.merge/2` (v1.0)
-[v1.8]  | Passing a non-empty list to `Enum.into/2`           | `Kernel.++/2` or `Keyword.merge/2` (v1.0)
+[v1.8]  | Passing a non-empty list to `Collectable.into/1`    | `++/2` or `Keyword.merge/2` (v1.0)
+[v1.8]  | Passing a non-empty list to `:into` in `for/1`      | `++/2` or `Keyword.merge/2` (v1.0)
+[v1.8]  | Passing a non-empty list to `Enum.into/2`           | `++/2` or `Keyword.merge/2` (v1.0)
 [v1.8]  | Time units in its plural form, such as: `:seconds`, `:milliseconds`, and the like | Use the singular form, such as: `:second`, `:millisecond`, and so on (v1.4)
 [v1.8]  | `Inspect.Algebra.surround/3`                        | `Inspect.Algebra.concat/2` and `Inspect.Algebra.nest/2` (v1.0)
 [v1.8]  | `Inspect.Algebra.surround_many/6`                   | `Inspect.Algebra.container_doc/6` (v1.6)
@@ -124,24 +131,24 @@ Version | Deprecated feature                                  | Replaced by (ava
 [v1.7]  | `Code.get_docs/2`                                   | `Code.fetch_docs/1` (v1.7)
 [v1.7]  | `Enum.chunk/2,3,4`                                  | `Enum.chunk_every/2` and [`Enum.chunk_every/3,4`](`Enum.chunk_every/4`) (v1.5)
 [v1.7]  | Calling `super/1` in`GenServer` callbacks           | Implementing the behaviour explicitly without calling `super/1` (v1.0)
-[v1.7]  | [`not left in right`](`Kernel.in/2`)                | [`left not in right`](`Kernel.in/2`) (v1.5)
+[v1.7]  | [`not left in right`](`in/2`)                | [`left not in right`](`in/2`) (v1.5)
 [v1.7]  | `Registry.start_link/3`                             | `Registry.start_link/1` (v1.5)
 [v1.7]  | `Stream.chunk/2,3,4`                                | `Stream.chunk_every/2` and [`Stream.chunk_every/3,4`](`Stream.chunk_every/4`) (v1.5)
 [v1.6]  | `Enum.partition/2`                                  | `Enum.split_with/2` (v1.4)
 [v1.6]  | `Macro.unescape_tokens/1,2`                         | Use `Enum.map/2` to traverse over the arguments (v1.0)
 [v1.6]  | `Module.add_doc/6`                                  | [`@doc`](`Module`) module attribute (v1.0)
-[v1.6]  | `Range.range?/1`                                    | Pattern match on [`_.._`](`Kernel.../2`) (v1.0)
+[v1.6]  | `Range.range?/1`                                    | Pattern match on [`_.._`](`../2`) (v1.0)
 [v1.5]  | `()` to mean `nil`                                  | `nil` (v1.0)
 [v1.5]  | `char_list/0` type                                  | `t:charlist/0` type (v1.3)
 [v1.5]  | `Atom.to_char_list/1`                               | `Atom.to_charlist/1` (v1.3)
-[v1.5]  | `Enum.filter_map/3`                                 | `Enum.filter/2` + `Enum.map/2` or [`for`](`Kernel.SpecialForms.for/1`) comprehensions (v1.0)
+[v1.5]  | `Enum.filter_map/3`                                 | `Enum.filter/2` + `Enum.map/2` or `for/1` comprehensions (v1.0)
 [v1.5]  | `Float.to_char_list/1`                              | `Float.to_charlist/1` (v1.3)
 [v1.5]  | `GenEvent` module                                   | `Supervisor` and `GenServer` (v1.0);<br/>[`GenStage`](https://hex.pm/packages/gen_stage) (v1.3);<br/>[`:gen_event`](`:gen_event`) (Erlang/OTP 17)
 [v1.5]  | `<%=` in middle and end expressions in `EEx`        | Use `<%` (`<%=` is allowed only in start expressions) (v1.0)
 [v1.5]  | `:as_char_lists` value in `t:Inspect.Opts.t/0` type | `:as_charlists` value (v1.3)
 [v1.5]  | `:char_lists` key in `t:Inspect.Opts.t/0` type      | `:charlists` key (v1.3)
 [v1.5]  | `Integer.to_char_list/1,2`                          | `Integer.to_charlist/1` and `Integer.to_charlist/2` (v1.3)
-[v1.5]  | `Kernel.to_char_list/1`                             | `Kernel.to_charlist/1` (v1.3)
+[v1.5]  | `to_char_list/1`                                    | `to_charlist/1` (v1.3)
 [v1.5]  | `List.Chars.to_char_list/1`                         | `List.Chars.to_charlist/1` (v1.3)
 [v1.5]  | `@compile {:parse_transform, _}` in `Module`        | *None*
 [v1.5]  | `Stream.filter_map/3`                               | `Stream.filter/2` + `Stream.map/2` (v1.0)
@@ -150,8 +157,8 @@ Version | Deprecated feature                                  | Replaced by (ava
 [v1.5]  | `String.lstrip/2` and `String.rstrip/2`             | Use `String.trim_leading/2` and `String.trim_trailing/2` with a binary as second argument (v1.3)
 [v1.5]  | `String.strip/1` and `String.strip/2`               | `String.trim/1` and `String.trim/2` (v1.3)
 [v1.5]  | `String.to_char_list/1`                             | `String.to_charlist/1` (v1.3)
-[v1.4]  | [Anonymous functions](`Kernel.SpecialForms.fn/1`) with no expression after `->` | Use an expression or explicitly return `nil` (v1.0)
-[v1.4]  | Support for making [private functions](`Kernel.defp/2`) overridable | Use [public functions](`Kernel.def/2`) (v1.0)
+[v1.4]  | [Anonymous functions](`fn/1`) with no expression after `->` | Use an expression or explicitly return `nil` (v1.0)
+[v1.4]  | Support for making [private functions](`defp/2`) overridable | Use [public functions](`def/2`) (v1.0)
 [v1.4]  | Variable used as function call                      | Use parentheses (v1.0)
 [v1.4]  | `Access.key/1`                                      | `Access.key/2` (v1.3)
 [v1.4]  | `Behaviour` module                                  | `@callback` module attribute (v1.0)
@@ -168,10 +175,10 @@ Version | Deprecated feature                                  | Replaced by (ava
 [v1.4]  | `Stream.uniq/2`                                     | `Stream.uniq_by/2` (v1.2)
 [v1.3]  | `\x{X*}` inside strings/sigils/charlists            | `\uXXXX` or `\u{X*}` (v1.1)
 [v1.3]  | `Dict` module                                       | `Keyword` (v1.0) or `Map` (v1.2)
-[v1.3]  | `:append_first` option in `Kernel.defdelegate/2`    | Define the function explicitly (v1.0)
+[v1.3]  | `:append_first` option in `defdelegate/2`           | Define the function explicitly (v1.0)
 [v1.3]  | Map/dictionary as 2nd argument in `Enum.group_by/3` | `Enum.reduce/3` (v1.0)
-[v1.3]  | `Keyword.size/1`                                    | `Kernel.length/1` (v1.0)
-[v1.3]  | `Map.size/1`                                        | `Kernel.map_size/1` (v1.0)
+[v1.3]  | `Keyword.size/1`                                    | `length/1` (v1.0)
+[v1.3]  | `Map.size/1`                                        | `map_size/1` (v1.0)
 [v1.3]  | `/r` option in `Regex`                              | `/U` (v1.1)
 [v1.3]  | `Set` behaviour                                     | `MapSet` data structure (v1.1)
 [v1.3]  | `String.valid_character?/1`                         | `String.valid?/1` (v1.0)
@@ -195,4 +202,5 @@ Version | Deprecated feature                                  | Replaced by (ava
 [v1.11]: https://github.com/elixir-lang/elixir/blob/v1.11/CHANGELOG.md#4-hard-deprecations
 [v1.12]: https://github.com/elixir-lang/elixir/blob/v1.12/CHANGELOG.md#4-hard-deprecations
 [v1.13]: https://github.com/elixir-lang/elixir/blob/v1.13/CHANGELOG.md#4-hard-deprecations
-[v1.14]: CHANGELOG.md#4-hard-deprecations
+[v1.14]: https://github.com/elixir-lang/elixir/blob/v1.14/CHANGELOG.md#4-hard-deprecations
+[v1.15]: CHANGELOG.md#4-hard-deprecations

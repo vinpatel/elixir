@@ -94,7 +94,7 @@ defmodule Mix.TaskTest do
       """)
 
       # Clean up the tasks and update task
-      Mix.TasksServer.clear()
+      Mix.Task.clear()
 
       # Task was found from deps loadpaths
       assert Mix.Task.run("task_hello") == "Hello World v1"
@@ -103,7 +103,7 @@ defmodule Mix.TaskTest do
       assert Mix.Task.run("compile") != :noop
 
       # Clean up the tasks and update task
-      Mix.TasksServer.clear()
+      Mix.Task.clear()
 
       File.write!("custom/raw_repo/lib/task_hello.ex", """
       defmodule Mix.Tasks.TaskHello do
@@ -234,18 +234,6 @@ defmodule Mix.TaskTest do
   test "moduledoc/1" do
     Code.prepend_path(MixTest.Case.tmp_path("beams"))
     assert Mix.Task.moduledoc(Mix.Tasks.Hello) == "A test task.\n"
-  end
-
-  test "preferred_cli_env/1 returns nil for missing task" do
-    assert Mix.Task.preferred_cli_env(:no_task) == nil
-  end
-
-  test "preferred_cli_env/1 returns nil when task does not have @preferred_cli_env attribute" do
-    assert Mix.Task.preferred_cli_env(:deps) == nil
-  end
-
-  test "preferred_cli_env/1 returns specified @preferred_cli_env attribute" do
-    assert Mix.Task.preferred_cli_env(:test) == :test
   end
 
   test "shortdoc/1" do

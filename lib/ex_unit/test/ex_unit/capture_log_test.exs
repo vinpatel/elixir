@@ -4,13 +4,7 @@ defmodule ExUnit.CaptureLogTest do
   use ExUnit.Case
 
   require Logger
-
   import ExUnit.CaptureLog
-
-  setup_all do
-    :ok = Logger.remove_backend(:console)
-    on_exit(fn -> Logger.add_backend(:console, flush: true) end)
-  end
 
   test "no output" do
     assert capture_log(fn -> nil end) == ""
@@ -34,7 +28,7 @@ defmodule ExUnit.CaptureLogTest do
   end
 
   test "level aware" do
-    assert capture_log([level: :warn], fn ->
+    assert capture_log([level: :warning], fn ->
              Logger.info("here")
            end) == ""
   end
@@ -61,7 +55,7 @@ defmodule ExUnit.CaptureLogTest do
         logged = capture_log(fn -> Logger.error("one") end)
         send(test = self(), {:nested, logged})
 
-        Logger.warn("two")
+        Logger.warning("two")
 
         spawn(fn ->
           Logger.debug("three")
@@ -72,7 +66,7 @@ defmodule ExUnit.CaptureLogTest do
       end)
 
     assert logged
-    assert logged =~ "[info]  one\n"
+    assert logged =~ "[info] one\n"
     assert logged =~ "[warning] two\n"
     assert logged =~ "[debug] three\n"
     assert logged =~ "[error] one\n"
@@ -84,24 +78,37 @@ defmodule ExUnit.CaptureLogTest do
     end
   end
 
-  test "with_log" do
-    {4, log} =
-      with_log(fn ->
-        Logger.error("calculating...")
-        2 + 2
-      end)
+  describe "with_log/2" do
+    test "returns the result and the log" do
+      {result, log} =
+        with_log(fn ->
+          Logger.error("calculating...")
+          2 + 2
+        end)
 
-    assert log =~ "calculating..."
+      assert result == 4
+      assert log =~ "calculating..."
+    end
+
+    test "respects the :format, :metadata, and :colors options" do
+      options = [format: "$metadata| $message", metadata: [:id], colors: [enabled: false]]
+
+      assert {4, log} =
+               with_log(options, fn ->
+                 Logger.info("hello", id: 123)
+                 2 + 2
+               end)
+
+      assert log == "id=123 | hello"
+    end
   end
 
   defp wait_capture_removal() do
-    case :gen_event.which_handlers(Logger) do
-      [Logger.Config] ->
-        :ok
-
-      _otherwise ->
-        Process.sleep(20)
-        wait_capture_removal()
+    if ExUnit.CaptureServer in Enum.map(:logger.get_handler_config(), & &1.id) do
+      Process.sleep(20)
+      wait_capture_removal()
+    else
+      :ok
     end
   end
 end

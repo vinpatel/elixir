@@ -1,5 +1,5 @@
 -module(elixir_erl_compiler).
--export([spawn/1, forms/3, noenv_forms/3, erl_to_core/2, format_error/1]).
+-export([spawn/1, forms/3, noenv_forms/3, erl_to_core/2]).
 -include("elixir.hrl").
 
 spawn(Fun) ->
@@ -57,7 +57,14 @@ compile(Forms, File, Opts) when is_list(Forms), is_list(Opts), is_binary(File) -
           {Module, Binary};
 
         {ok, Module, _Binary, _Warnings} ->
-          elixir_errors:form_error([], File, ?MODULE, {invalid_compilation, Module});
+          Message = io_lib:format(
+            "could not compile module ~ts. We expected the compiler to return a .beam binary but "
+            "got something else. This usually happens because ERL_COMPILER_OPTIONS or @compile "
+            "was set to change the compilation outcome in a way that is incompatible with Elixir",
+            [elixir_aliases:inspect(Module)]
+          ),
+
+          elixir_errors:compile_error([], File, Message);
 
         {error, Errors, Warnings} ->
           format_warnings(Opts, Warnings),
@@ -95,12 +102,6 @@ format_warnings(Opts, Warnings) ->
 handle_file_warning(_, _File, {_Line, v3_core, {map_key_repeated, _}}) -> ok;
 handle_file_warning(_, _File, {_Line, sys_core_fold, {ignored, useless_building}}) -> ok;
 
-%% TODO: remove when we require Erlang/OTP 24
-handle_file_warning(_, _File, {_Line, sys_core_fold, useless_building}) -> ok;
-handle_file_warning(true, _File, {_Line, sys_core_fold, nomatch_guard}) -> ok;
-handle_file_warning(true, _File, {_Line, sys_core_fold, {nomatch_shadow, _}}) -> ok;
-%%
-
 %% Ignore all linting errors (only come up on parse transforms)
 handle_file_warning(_, _File, {_Line, erl_lint, _}) -> ok;
 
@@ -110,8 +111,8 @@ handle_file_warning(_, File, {Line, Module, Desc}) ->
 
 %% Handle warnings
 
-handle_file_error(File, {beam_validator, Rest}) ->
-  elixir_errors:form_error([{line, 0}], File, beam_validator, Rest);
+handle_file_error(File, {beam_validator, Desc}) ->
+  elixir_errors:compile_error([{line, 0}], File, beam_validator:format_error(Desc));
 handle_file_error(File, {Line, Module, Desc}) ->
   Message = custom_format(Module, Desc),
   elixir_errors:compile_error([{line, Line}], File, Message).
@@ -155,30 +156,8 @@ custom_format(sys_core_fold, {failed, {eval_failure, {Mod, Name, Arity}, Error}}
             end,
   ["the call to ", Trimmed, " will fail with ", elixir_aliases:inspect(Struct)];
 
-%% TODO: remove when we require Erlang/OTP 24
-custom_format(sys_core_fold, {nomatch_shadow, Line, FA}) ->
-  custom_format(sys_core_fold, {nomatch, {shadow, Line, FA}});
-custom_format(sys_core_fold, nomatch_guard) ->
-  custom_format(sys_core_fold, {nomatch, guard});
-custom_format(sys_core_fold, {no_effect, X}) ->
-  custom_format(sys_core_fold, {ignored, {no_effect, X}});
-custom_format(sys_core_fold, {eval_failure, Error}) ->
-  #{'__struct__' := Struct} = 'Elixir.Exception':normalize(error, Error),
-  ["this expression will fail with ", elixir_aliases:inspect(Struct)];
-%%
-
 custom_format([], Desc) ->
   io_lib:format("~p", [Desc]);
 
 custom_format(Module, Desc) ->
   Module:format_error(Desc).
-
-%% Error formatting
-
-format_error({invalid_compilation, Module}) ->
-  io_lib:format(
-    "could not compile module ~ts. We expected the compiler to return a .beam binary but "
-    "got something else. This usually happens because ERL_COMPILER_OPTIONS or @compile "
-    "was set to change the compilation outcome in a way that is incompatible with Elixir",
-    [elixir_aliases:inspect(Module)]
-  ).

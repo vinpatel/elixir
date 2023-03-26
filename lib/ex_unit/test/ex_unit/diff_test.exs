@@ -39,6 +39,10 @@ defmodule ExUnit.DiffTest do
     quote(do: ^unquote(x))
   end
 
+  defmacrop block_head({:__block__, _, [head | _]}) do
+    head
+  end
+
   defmacrop assert_diff(expr, expected_binding, pins \\ [])
 
   defmacrop assert_diff({:=, _, [left, right]}, expected_binding, pins) do
@@ -144,7 +148,7 @@ defmodule ExUnit.DiffTest do
 
   test "pseudo vars" do
     assert_diff(__MODULE__ = ExUnit.DiffTest, [])
-    refute_diff(__MODULE__ = SomethingElse, "-__MODULE__-", "+SomethingElse+")
+    refute_diff(__MODULE__ = SomethingElse, "-ExUnit.DiffTest-", "+SomethingElse+")
   end
 
   test "integers" do
@@ -292,6 +296,13 @@ defmodule ExUnit.DiffTest do
     )
 
     assert_diff([:a | x] = [:a | :b], x: :b)
+
+    refute_diff(
+      [[[[], "Hello, "] | "world"] | "!"] ==
+        [[[[], "Hello "] | "world"] | "!"],
+      "[[[[], \"Hello-,- \"] | \"world\"] | \"!\"]",
+      "[[[[], \"Hello \"] | \"world\"] | \"!\"]"
+    )
   end
 
   test "proper lists" do
@@ -767,6 +778,14 @@ defmodule ExUnit.DiffTest do
       "%+Date+{calendar: Calendar.ISO, day: 1, month: 1, year: 2020}",
       pins
     )
+
+    # right side is not map-like
+    refute_diff(
+      %^type{age: ^age, name: "john"} = nil,
+      "-%^type{age: ^age, name: \"john\"}-",
+      "+nil+",
+      pins
+    )
   end
 
   test "invalid structs" do
@@ -861,8 +880,15 @@ defmodule ExUnit.DiffTest do
   end
 
   test "concat binaries" do
+    assert_diff("fox hops" <> _ = "fox hops over the dog", [])
     assert_diff("fox hops" <> " over the dog" = "fox hops over the dog", [])
     assert_diff("fox hops " <> "over " <> "the dog" = "fox hops over the dog", [])
+
+    refute_diff(
+      "fox hops" <> _ = "dog hops over the fox",
+      ~s/"-f-o-x- hops" <> _/,
+      ~s/+d+o+g+ hops over the fox/
+    )
 
     refute_diff(
       "fox hops" <> " under the dog" = "fox hops over the dog",
@@ -939,8 +965,8 @@ defmodule ExUnit.DiffTest do
     assert_diff(one() = 1, [])
     assert_diff(tuple(x, x) = {1, 1}, x: 1)
 
-    refute_diff(one() = 2, "-one()-", "+2+")
-    refute_diff(tuple(x, x) = {1, 2}, "-tuple(x, x)-", "{1, +2+}")
+    refute_diff(one() = 2, "-1-", "+2+")
+    refute_diff(tuple(x, x) = {1, 2}, "{x, -x-}", "{1, +2+}")
 
     pins = %{{:x, nil} => 1}
     assert_diff(pin_x() = 1, [], pins)
@@ -965,17 +991,47 @@ defmodule ExUnit.DiffTest do
     refute_diff((x when x == z) = 0, "x when x == z", "0", z: 1)
   end
 
+  test "blocks" do
+    refute_diff(
+      block_head(
+        (
+          1
+          2
+        )
+      ) = 3,
+      "1",
+      "3"
+    )
+
+    refute_diff(
+      ["foo" | {:__block__, [], [1]}] = ["bar" | {:__block__, [], [2]}],
+      "[\"-foo-\" | {:__block__, [], [-1-]}]",
+      "[\"+bar+\" | {:__block__, [], [+2+]}]"
+    )
+
+    refute_diff(
+      ["foo" | {:__block__, [], [1]}] == ["bar" | {:__block__, [], [2]}],
+      "[\"-foo-\" | {:__block__, [], [-1-]}]",
+      "[\"+bar+\" | {:__block__, [], [+2+]}]"
+    )
+  end
+
   test "charlists" do
     refute_diff(
-      'fox hops over \'the dog' = 'fox jumps over the lazy cat',
-      "'fox -ho-ps over -\\'-the -dog-'",
-      "'fox +jum+ps over the +lazy cat+'"
+      ~c"fox hops over 'the dog" = ~c"fox jumps over the lazy cat",
+      "~c\"fox -ho-ps over -'-the -dog-\"",
+      "~c\"fox +jum+ps over the +lazy cat+\""
     )
 
     refute_diff({[], :ok} = {[], [], :ok}, "{[], -:ok-}", "{[], +[]+, +:ok+}")
-    refute_diff({[], :ok} = {'foo', [], :ok}, "{'--', -:ok-}", "{'+foo+', +[]+, +:ok+}")
-    refute_diff({'foo', :ok} = {[], [], :ok}, "{'-foo-', -:ok-}", "{'++', +[]+, +:ok+}")
-    refute_diff({'foo', :ok} = {'bar', [], :ok}, "{'-foo-', -:ok-}", "{'+bar+', +[]+, +:ok+}")
+    refute_diff({[], :ok} = {~c"foo", [], :ok}, "{~c\"--\", -:ok-}", "{~c\"+foo+\", +[]+, +:ok+}")
+    refute_diff({~c"foo", :ok} = {[], [], :ok}, "{~c\"-foo-\", -:ok-}", "{~c\"++\", +[]+, +:ok+}")
+
+    refute_diff(
+      {~c"foo", :ok} = {~c"bar", [], :ok},
+      "{~c\"-foo-\", -:ok-}",
+      "{~c\"+bar+\", +[]+, +:ok+}"
+    )
   end
 
   test "refs" do
@@ -1057,6 +1113,24 @@ defmodule ExUnit.DiffTest do
       %Opaque{data: identity} == :a,
       "-#Opaque<???>-",
       "+:a+"
+    )
+  end
+
+  defp closure(a), do: fn -> a end
+
+  test "functions with closure" do
+    closure1 = closure(1)
+    closure2 = closure(2)
+
+    fun_info = Function.info(closure1)
+    uniq = Integer.to_string(fun_info[:new_index]) <> "." <> Integer.to_string(fun_info[:uniq])
+
+    assert_diff(closure1 == closure1, [])
+
+    refute_diff(
+      closure1 == closure2,
+      "#Function<\n  #{uniq}/0 in ExUnit.DiffTest.closure/1\n  [-1-]\n>",
+      "#Function<\n  #{uniq}/0 in ExUnit.DiffTest.closure/1\n  [+2+]\n>"
     )
   end
 

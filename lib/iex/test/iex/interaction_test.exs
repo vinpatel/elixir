@@ -21,7 +21,7 @@ defmodule IEx.InteractionTest do
 
   test "invalid input" do
     assert capture_iex("if true do ) false end") =~
-             "** (SyntaxError) iex:1:12: unexpected token: ). The \"do\" at line 1 is missing terminator \"end\""
+             "** (SyntaxError) iex:1:12: unexpected token: )"
   end
 
   test "multiple vars" do
@@ -78,6 +78,30 @@ defmodule IEx.InteractionTest do
     :code.delete(Sample)
   end
 
+  test "blocks" do
+    input = """
+    (
+      defmodule Sample do
+        def foo, do: bar()
+        def bar, do: 13
+      end
+      import Sample
+      foo()
+    )
+    """
+
+    assert capture_iex(input) =~ "13"
+  after
+    :code.purge(Sample)
+    :code.delete(Sample)
+  end
+
+  test "ExUnit.Assertions" do
+    capture = capture_iex("import ExUnit.Assertions; assert 1 == 2")
+    assert capture =~ "** (ExUnit.AssertionError)"
+    assert capture =~ "assert 1 == 2"
+  end
+
   test "prompt" do
     opts = [default_prompt: "prompt(%counter)>"]
     assert capture_iex("1\n", opts, [], true) == "prompt(1)> 1\nprompt(2)>"
@@ -91,7 +115,7 @@ defmodule IEx.InteractionTest do
   if IO.ANSI.enabled?() do
     test "color" do
       opts = [colors: [enabled: true, eval_result: [:red]]]
-      assert capture_iex("1 + 2", opts) == "\e[31m3\e[0m"
+      assert capture_iex("1 + 2", opts) == "\e[31m\e[33m3\e[0m\e[31m\e[0m"
       assert capture_iex("IO.ANSI.blue()", opts) == "\e[31m\e[32m\"\\e[34m\"\e[0m\e[31m\e[0m"
 
       assert capture_iex("{:ok}", opts) ==
@@ -100,7 +124,15 @@ defmodule IEx.InteractionTest do
   end
 
   test "inspect opts" do
-    opts = [inspect: [binaries: :as_binaries, charlists: :as_lists, structs: false, limit: 4]]
+    opts = [
+      inspect: [
+        binaries: :as_binaries,
+        charlists: :as_lists,
+        structs: false,
+        limit: 4,
+        custom_options: [sort_maps: true]
+      ]
+    ]
 
     assert capture_iex("<<45, 46, 47>>\n[45, 46, 47]\n%IO.Stream{}", opts) ==
              "<<45, 46, 47>>\n[45, 46, 47]\n%{__struct__: IO.Stream, device: nil, line_or_bytes: :line, raw: true}"
@@ -118,7 +150,9 @@ defmodule IEx.InteractionTest do
   test "exception while invoking conflicting helpers" do
     import File, only: [open: 1], warn: false
 
-    assert capture_iex("open('README.md')", [], env: __ENV__) =~
+    assert capture_io(:stderr, fn ->
+             capture_iex("open('README.md')", [], env: __ENV__)
+           end) =~
              ~r"function open/1 imported from both File and IEx.Helpers"
   end
 
@@ -174,25 +208,40 @@ defmodule IEx.InteractionTest do
 
   describe ".iex" do
     test "no .iex" do
-      assert "** (CompileError) iex:1: undefined function my_variable/0" <> _ =
-               capture_iex("my_variable")
+      assert capture_io(:stderr, fn -> capture_iex("my_variable") end) =~
+               "undefined variable \"my_variable\""
     end
 
     @tag :tmp_dir
     test "single .iex", %{tmp_dir: tmp_dir} do
-      path = write_dot_iex!(tmp_dir, "dot-iex", "my_variable = 144")
-      assert capture_iex("my_variable", [], dot_iex_path: path) == "144"
+      path =
+        write_dot_iex!(tmp_dir, "dot-iex", """
+        defmodule DotIEx do
+          def my_fun_single, do: :single
+        end
+        import DotIEx
+        my_variable = 42
+        """)
+
+      assert capture_iex("{my_fun_single(), my_variable}", [], dot_iex_path: path) ==
+               "{:single, 42}"
     end
 
     @tag :tmp_dir
     test "nested .iex", %{tmp_dir: tmp_dir} do
-      write_dot_iex!(tmp_dir, "dot-iex-1", "nested_var = 13\nimport IO")
+      write_dot_iex!(tmp_dir, "dot-iex-1", """
+      defmodule DotIExNested do
+        def my_fun_nested, do: :nested
+      end
+      import DotIExNested
+      nested_var = 42
+      """)
 
       path =
-        write_dot_iex!(tmp_dir, "dot-iex", "import_file \"#{tmp_dir}/dot-iex-1\"\nmy_variable=14")
+        write_dot_iex!(tmp_dir, "dot-iex", "import_file \"#{tmp_dir}/dot-iex-1\"\nmy_variable=13")
 
-      input = "nested_var\nmy_variable\nputs \"hello\""
-      assert capture_iex(input, [], dot_iex_path: path) == "13\n14\nhello\n:ok"
+      input = "nested_var\nmy_variable\nmy_fun_nested()"
+      assert capture_iex(input, [], dot_iex_path: path) == "42\n13\n:nested"
     end
   end
 

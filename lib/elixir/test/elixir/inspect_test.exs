@@ -1,12 +1,11 @@
 Code.require_file("test_helper.exs", __DIR__)
 
 # This is to temporarily test some inconsistencies in
-# the error ArgumentError messages
-# https://github.com/erlang/otp/issues/5440
-# TODO: once fixed in OTP and that minimum version is required,
-# please remove MyArgumentError and replace the calls to:
+# the error ArgumentError messages.
+# Remove MyArgumentError and replace the calls to:
 # - MyArgumentError with ArgumentError
 # - MyArgumentError.culprit() with Atom.to_string("Foo")
+# in Erlang/OTP 25
 defmodule MyArgumentError do
   defexception message: "argument error"
 
@@ -230,8 +229,7 @@ defmodule Inspect.NumberTest do
 
   test "float" do
     assert inspect(1.0) == "1.0"
-    assert inspect(1.0e10) == "1.0e10"
-    assert inspect(1.0e10) == "1.0e10"
+    assert inspect(1.0e10) == "10000000000.0"
     assert inspect(1.0e-10) == "1.0e-10"
   end
 
@@ -296,13 +294,13 @@ defmodule Inspect.ListTest do
   end
 
   test "printable" do
-    assert inspect('abc') == "'abc'"
+    assert inspect(~c"abc") == ~s(~c"abc")
   end
 
   test "printable limit" do
-    assert inspect('hello world', printable_limit: 4) == ~s('hell' ++ ...)
+    assert inspect(~c"hello world", printable_limit: 4) == ~s(~c"hell" ++ ...)
     # Non printable characters after the limit don't matter
-    assert inspect('hello world' ++ [0], printable_limit: 4) == ~s('hell' ++ ...)
+    assert inspect(~c"hello world" ++ [0], printable_limit: 4) == ~s(~c"hell" ++ ...)
     # Non printable strings aren't affected by printable limit
     assert inspect([0, 1, 2, 3, 4], printable_limit: 3) == ~s([0, 1, 2, 3, 4])
   end
@@ -322,24 +320,24 @@ defmodule Inspect.ListTest do
   end
 
   test "opt infer" do
-    assert inspect('john' ++ [0] ++ 'doe', charlists: :infer) ==
+    assert inspect(~c"john" ++ [0] ++ ~c"doe", charlists: :infer) ==
              "[106, 111, 104, 110, 0, 100, 111, 101]"
 
-    assert inspect('john', charlists: :infer) == "'john'"
+    assert inspect(~c"john", charlists: :infer) == ~s(~c"john")
     assert inspect([0], charlists: :infer) == "[0]"
   end
 
   test "opt as strings" do
-    assert inspect('john' ++ [0] ++ 'doe', charlists: :as_charlists) == "'john\\0doe'"
-    assert inspect('john', charlists: :as_charlists) == "'john'"
-    assert inspect([0], charlists: :as_charlists) == "'\\0'"
+    assert inspect(~c"john" ++ [0] ++ ~c"doe", charlists: :as_charlists) == ~s(~c"john\\0doe")
+    assert inspect(~c"john", charlists: :as_charlists) == ~s(~c"john")
+    assert inspect([0], charlists: :as_charlists) == ~s(~c"\\0")
   end
 
   test "opt as lists" do
-    assert inspect('john' ++ [0] ++ 'doe', charlists: :as_lists) ==
+    assert inspect(~c"john" ++ [0] ++ ~c"doe", charlists: :as_lists) ==
              "[106, 111, 104, 110, 0, 100, 111, 101]"
 
-    assert inspect('john', charlists: :as_lists) == "[106, 111, 104, 110]"
+    assert inspect(~c"john", charlists: :as_lists) == "[106, 111, 104, 110]"
     assert inspect([0], charlists: :as_lists) == "[0]"
   end
 
@@ -363,7 +361,7 @@ defmodule Inspect.ListTest do
   end
 
   test "codepoints" do
-    assert inspect('é') == "[233]"
+    assert inspect(~c"é") == "[233]"
   end
 
   test "empty" do
@@ -419,14 +417,20 @@ defmodule Inspect.MapTest do
   test "basic" do
     assert inspect(%{1 => "b"}) == "%{1 => \"b\"}"
 
-    assert inspect(%{1 => "b", 2 => "c"}, pretty: true, width: 1) ==
+    assert inspect(%{1 => "b", 2 => "c"},
+             pretty: true,
+             width: 1,
+             custom_options: [sort_maps: true]
+           ) ==
              "%{\n  1 => \"b\",\n  2 => \"c\"\n}"
   end
 
   test "keyword" do
     assert inspect(%{a: 1}) == "%{a: 1}"
-    assert inspect(%{a: 1, b: 2}) == "%{a: 1, b: 2}"
-    assert inspect(%{a: 1, b: 2, c: 3}) == "%{a: 1, b: 2, c: 3}"
+    assert inspect(%{a: 1, b: 2}, custom_options: [sort_maps: true]) == "%{a: 1, b: 2}"
+
+    assert inspect(%{a: 1, b: 2, c: 3}, custom_options: [sort_maps: true]) ==
+             "%{a: 1, b: 2, c: 3}"
   end
 
   test "with limit" do
@@ -448,12 +452,12 @@ defmodule Inspect.MapTest do
   test "public modified struct" do
     public = %Public{key: 1}
 
-    assert inspect(Map.put(public, :foo, :bar)) ==
+    assert inspect(Map.put(public, :foo, :bar), custom_options: [sort_maps: true]) ==
              "%{__struct__: Inspect.MapTest.Public, foo: :bar, key: 1}"
   end
 
   test "private struct" do
-    assert inspect(%{__struct__: Private, key: 1}) ==
+    assert inspect(%{__struct__: Private, key: 1}, custom_options: [sort_maps: true]) ==
              "%{__struct__: Inspect.MapTest.Private, key: 1}"
   end
 
@@ -488,7 +492,7 @@ defmodule Inspect.MapTest do
           %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
     '''
 
-    assert inspect(%Failing{name: "Foo"}) =~ message
+    assert inspect(%Failing{name: "Foo"}, custom_options: [sort_maps: true]) =~ message
   end
 
   test "safely inspect bad implementation disables colors" do
@@ -507,7 +511,10 @@ defmodule Inspect.MapTest do
           %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
     '''
 
-    assert inspect(%Failing{name: "Foo"}, syntax_colors: [atom: [:green]]) =~ message
+    assert inspect(%Failing{name: "Foo"},
+             syntax_colors: [atom: [:green]],
+             custom_options: [sort_maps: true]
+           ) =~ message
   end
 
   test "unsafely inspect bad implementation" do
@@ -526,7 +533,7 @@ defmodule Inspect.MapTest do
     '''
 
     try do
-      inspect(%Failing{name: "Foo"}, safe: false)
+      inspect(%Failing{name: "Foo"}, safe: false, custom_options: [sort_maps: true])
     rescue
       exception in Inspect.Error ->
         assert Exception.message(exception) =~ exception_message
@@ -554,14 +561,16 @@ defmodule Inspect.MapTest do
 
       while inspecting:
 
-          %{__struct__: Inspect.MapTest.Failing, name: "Foo"}
     '''
 
     try do
       Enum.to_list(%Failing{name: "Foo"})
     rescue
       exception in Protocol.UndefinedError ->
-        assert Exception.message(exception) =~ exception_message
+        message = Exception.message(exception)
+        assert message =~ exception_message
+        assert message =~ "__struct__: Inspect.MapTest.Failing"
+        assert message =~ "name: \"Foo\""
 
         assert [
                  {Enumerable, :impl_for!, 1, _} | _
@@ -619,7 +628,7 @@ defmodule Inspect.MapTest do
         )
       )
 
-    assert inspect(%Failing{name: "Foo"}) =~ message
+    assert inspect(%Failing{name: "Foo"}, custom_options: [sort_maps: true]) =~ message
     assert inspected =~ message
   end
 
@@ -695,6 +704,28 @@ defmodule Inspect.MapTest do
              "%Inspect.MapTest.StructWithAllFieldsInOnlyOption{\n  a: 1,\n  b: 2\n}"
   end
 
+  test "struct missing fields in the :only option" do
+    assert_raise ArgumentError,
+                 "unknown fields [:c] in :only when deriving the Inspect protocol for Inspect.MapTest.StructMissingFieldsInOnlyOption",
+                 fn ->
+                   defmodule StructMissingFieldsInOnlyOption do
+                     @derive {Inspect, only: [:c]}
+                     defstruct [:a, :b]
+                   end
+                 end
+  end
+
+  test "struct missing fields in the :except option" do
+    assert_raise ArgumentError,
+                 "unknown fields [:c, :d] in :except when deriving the Inspect protocol for Inspect.MapTest.StructMissingFieldsInExceptOption",
+                 fn ->
+                   defmodule StructMissingFieldsInExceptOption do
+                     @derive {Inspect, except: [:c, :d]}
+                     defstruct [:a, :b]
+                   end
+                 end
+  end
+
   defmodule StructWithExceptOption do
     @derive {Inspect, except: [:b, :c]}
     defstruct [:a, :b, :c, :d]
@@ -719,6 +750,38 @@ defmodule Inspect.MapTest do
 
     assert inspect(struct, pretty: true, width: 1) ==
              "#Inspect.MapTest.StructWithBothOnlyAndExceptOptions<\n  a: 1,\n  ...\n>"
+  end
+
+  defmodule StructWithOptionalAndOrder do
+    @derive {Inspect, optional: [:b, :c]}
+    defstruct [:c, :d, :a, :b]
+  end
+
+  test "struct with both :order and :optional options" do
+    struct = %StructWithOptionalAndOrder{a: 1, b: 2, c: 3, d: 4}
+
+    assert inspect(struct) ==
+             "%Inspect.MapTest.StructWithOptionalAndOrder{c: 3, d: 4, a: 1, b: 2}"
+
+    struct = %StructWithOptionalAndOrder{}
+    assert inspect(struct) == "%Inspect.MapTest.StructWithOptionalAndOrder{d: nil, a: nil}"
+  end
+
+  defmodule StructWithExceptOptionalAndOrder do
+    @derive {Inspect, optional: [:b, :c], except: [:e]}
+    defstruct [:c, :d, :e, :a, :b]
+  end
+
+  test "struct with :except, :order, and :optional options" do
+    struct = %StructWithExceptOptionalAndOrder{a: 1, b: 2, c: 3, d: 4}
+
+    assert inspect(struct) ==
+             "#Inspect.MapTest.StructWithExceptOptionalAndOrder<c: 3, d: 4, a: 1, b: 2, ...>"
+
+    struct = %StructWithExceptOptionalAndOrder{}
+
+    assert inspect(struct) ==
+             "#Inspect.MapTest.StructWithExceptOptionalAndOrder<d: nil, a: nil, ...>"
   end
 end
 
@@ -783,7 +846,7 @@ defmodule Inspect.OthersTest do
   end
 
   test "map set" do
-    assert "#MapSet<" <> _ = inspect(MapSet.new())
+    assert "MapSet.new(" <> _ = inspect(MapSet.new())
   end
 
   test "PIDs" do
@@ -810,6 +873,9 @@ defmodule Inspect.OthersTest do
     assert inspect(~r<\a\b\d\e\f\n\r\s\t\v/>) == "~r/\\a\\b\\d\\e\\f\\n\\r\\s\\t\\v\\//"
     assert inspect(~r" \\/ ") == "~r/ \\\\\\/ /"
     assert inspect(~r/hi/, syntax_colors: [regex: :red]) == "\e[31m~r/hi/\e[0m"
+
+    assert inspect(Regex.compile!("foo", "i")) == "~r/foo/i"
+    assert inspect(Regex.compile!("foo", [:caseless])) == ~S'Regex.compile!("foo", [:caseless])'
   end
 
   test "inspect_fun" do

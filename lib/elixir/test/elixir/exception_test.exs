@@ -18,13 +18,20 @@ defmodule ExceptionTest do
       end
     end
 
-    assert Exception.message(%{__struct__: BadException, __exception__: true, raise: true}) =~
-             "got RuntimeError with message \"oops\" while retrieving Exception.message/1 " <>
-               "for %{__exception__: true, __struct__: ExceptionTest.BadException, raise: true}"
+    assert "got RuntimeError with message \"oops\" while retrieving Exception.message/1 for %{" <>
+             inspected =
+             Exception.message(%{__struct__: BadException, __exception__: true, raise: true})
 
-    assert Exception.message(%{__struct__: BadException, __exception__: true, raise: false}) =~
-             "got nil while retrieving Exception.message/1 " <>
-               "for %{__exception__: true, __struct__: ExceptionTest.BadException, raise: false}"
+    assert inspected =~ "raise: true"
+    assert inspected =~ "__exception__: true"
+    assert inspected =~ "__struct__: ExceptionTest.BadException"
+
+    assert "got nil while retrieving Exception.message/1 for %{" <> inspected =
+             Exception.message(%{__struct__: BadException, __exception__: true, raise: false})
+
+    assert inspected =~ "raise: false"
+    assert inspected =~ "__exception__: true"
+    assert inspected =~ "__struct__: ExceptionTest.BadException"
   end
 
   test "normalize/2" do
@@ -33,6 +40,12 @@ defmodule ExceptionTest do
     assert Exception.normalize({:EXIT, self()}, :badarg, []) == :badarg
     assert Exception.normalize(:error, :badarg, []).__struct__ == ArgumentError
     assert Exception.normalize(:error, %ArgumentError{}, []).__struct__ == ArgumentError
+
+    assert %ErlangError{original: :no_translation, reason: ": foo"} =
+             Exception.normalize(:error, :no_translation, [
+               {:io, :put_chars, [self(), <<222>>],
+                [error_info: %{module: __MODULE__, function: :dummy_error_extras}]}
+             ])
   end
 
   test "format/2 without stacktrace" do
@@ -98,35 +111,37 @@ defmodule ExceptionTest do
   end
 
   test "format_stacktrace_entry/1 with file and line" do
-    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: 'file.ex', line: 10]}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: ~c"file.ex", line: 10]}) ==
              "file.ex:10: Foo.bar()"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, [1, 2, 3], [file: 'file.ex', line: 10]}) ==
+    assert Exception.format_stacktrace_entry(
+             {Foo, :bar, [1, 2, 3], [file: ~c"file.ex", line: 10]}
+           ) ==
              "file.ex:10: Foo.bar(1, 2, 3)"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: 'file.ex', line: 10]}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: ~c"file.ex", line: 10]}) ==
              "file.ex:10: Foo.bar/1"
   end
 
   test "format_stacktrace_entry/1 with file no line" do
-    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: 'file.ex']}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: ~c"file.ex"]}) ==
              "file.ex: Foo.bar()"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: 'file.ex', line: 0]}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [], [file: ~c"file.ex", line: 0]}) ==
              "file.ex: Foo.bar()"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, [1, 2, 3], [file: 'file.ex']}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, [1, 2, 3], [file: ~c"file.ex"]}) ==
              "file.ex: Foo.bar(1, 2, 3)"
 
-    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: 'file.ex']}) ==
+    assert Exception.format_stacktrace_entry({Foo, :bar, 1, [file: ~c"file.ex"]}) ==
              "file.ex: Foo.bar/1"
   end
 
   test "format_stacktrace_entry/1 with application" do
-    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: 'file.ex']}) ==
+    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: ~c"file.ex"]}) ==
              "(elixir #{System.version()}) file.ex: Exception.bar()"
 
-    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: 'file.ex', line: 10]}) ==
+    assert Exception.format_stacktrace_entry({Exception, :bar, [], [file: ~c"file.ex", line: 10]}) ==
              "(elixir #{System.version()}) file.ex:10: Exception.bar()"
   end
 
@@ -406,19 +421,128 @@ defmodule ExceptionTest do
       assert Exception.blame(:exit, :function_clause, stack) == {:function_clause, stack}
     end
 
+    test "handles operators precedence" do
+      import PathHelpers
+
+      write_beam(
+        defmodule OperatorPrecedence do
+          def test!(x, y) when x in [1, 2, 3] and y >= 4, do: :ok
+        end
+      )
+
+      :code.delete(OperatorPrecedence)
+      :code.purge(OperatorPrecedence)
+
+      assert blame_message(OperatorPrecedence, & &1.test!(1, 2)) =~ """
+             no function clause matching in ExceptionTest.OperatorPrecedence.test!/2
+
+             The following arguments were given to ExceptionTest.OperatorPrecedence.test!/2:
+
+                 # 1
+                 1
+
+                 # 2
+                 2
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def test!(x, y) when (x === 1 or -x === 2- or -x === 3-) and -y >= 4-
+             """
+    end
+
+    test "reverts is_struct macro on guards for blaming" do
+      import PathHelpers
+
+      write_beam(
+        defmodule Req do
+          def get!(url)
+              when is_binary(url) or (is_struct(url) and is_struct(url, URI) and false) do
+            url
+          end
+
+          def get!(url, url_module)
+              when is_binary(url) or (is_struct(url) and is_struct(url, url_module) and false) do
+            url
+          end
+
+          def sub_get!(url) when is_struct(url.sub, URI), do: url.sub
+        end
+      )
+
+      :code.delete(Req)
+      :code.purge(Req)
+
+      assert blame_message(Req, & &1.get!(url: "https://elixir-lang.org")) =~ """
+             no function clause matching in ExceptionTest.Req.get!/1
+
+             The following arguments were given to ExceptionTest.Req.get!/1:
+
+                 # 1
+                 [url: "https://elixir-lang.org"]
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def get!(url) when -is_binary(url)- or -is_struct(url)- and -is_struct(url, URI)- and -false-
+             """
+
+      elixir_uri = %URI{} = URI.parse("https://elixir-lang.org")
+
+      assert blame_message(Req, & &1.get!(elixir_uri, URI)) =~ """
+             no function clause matching in ExceptionTest.Req.get!/2
+
+             The following arguments were given to ExceptionTest.Req.get!/2:
+
+                 # 1
+                 %URI{scheme: \"https\", authority: \"elixir-lang.org\", userinfo: nil, host: \"elixir-lang.org\", port: 443, path: nil, query: nil, fragment: nil}
+
+                 # 2
+                 URI
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def get!(url, url_module) when -is_binary(url)- or is_struct(url) and is_struct(url, url_module) and -false-
+             """
+
+      assert blame_message(Req, & &1.get!(elixir_uri)) =~ """
+             no function clause matching in ExceptionTest.Req.get!/1
+
+             The following arguments were given to ExceptionTest.Req.get!/1:
+
+                 # 1
+                 %URI{scheme: \"https\", authority: \"elixir-lang.org\", userinfo: nil, host: \"elixir-lang.org\", port: 443, path: nil, query: nil, fragment: nil}
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def get!(url) when -is_binary(url)- or is_struct(url) and is_struct(url, URI) and -false-
+             """
+
+      assert blame_message(Req, & &1.sub_get!(%{})) =~ """
+             no function clause matching in ExceptionTest.Req.sub_get!/1
+
+             The following arguments were given to ExceptionTest.Req.sub_get!/1:
+
+                 # 1
+                 %{}
+
+             Attempted function clauses (showing 1 out of 1):
+
+                 def sub_get!(url) when -is_struct(url.sub, URI)-
+             """
+    end
+
     test "annotates badarg on apply" do
-      assert blame_message([], & &1.foo) ==
+      assert blame_message([], & &1.foo()) ==
                "you attempted to apply a function named :foo on []. If you are using Kernel.apply/3, make sure " <>
                  "the module is an atom. If you are using the dot syntax, such as " <>
-                 "map.field or module.function(), make sure the left side of the dot is an atom or a map"
+                 "module.function(), make sure the left-hand side of the dot is a module atom"
 
       assert blame_message([], &apply(&1, :foo, [])) ==
                "you attempted to apply a function named :foo on []. If you are using Kernel.apply/3, make sure " <>
                  "the module is an atom. If you are using the dot syntax, such as " <>
-                 "map.field or module.function(), make sure the left side of the dot is an atom or a map"
+                 "module.function(), make sure the left-hand side of the dot is a module atom"
 
       assert blame_message([], &apply(Kernel, &1, [1, 2])) ==
-               "you attempted to apply a function named [] on module Kernel. However [] is not a valid function name. " <>
+               "you attempted to apply a function named [] on module Kernel. However, [] is not a valid function name. " <>
                  "Function names (the second argument of apply) must always be an atom"
 
       assert blame_message(123, &apply(Kernel, :+, &1)) ==
@@ -473,7 +597,7 @@ defmodule ExceptionTest do
 
     test "annotates undefined function clause error with macro hints" do
       assert blame_message(Integer, & &1.is_odd(1)) ==
-               "function Integer.is_odd/1 is undefined or private. However there is " <>
+               "function Integer.is_odd/1 is undefined or private. However, there is " <>
                  "a macro with the same name and arity. Be sure to require Integer if " <>
                  "you intend to invoke this macro"
     end
@@ -512,17 +636,32 @@ defmodule ExceptionTest do
                "function ExceptionTest.ImplementationWithOptional.optional/0 is undefined or private"
     end
 
-    if :erlang.system_info(:otp_release) >= '23' do
-      test "annotates undefined function clause error with otp obsolete hints" do
-        assert blame_message(:erlang, & &1.hash(1, 2)) ==
-                 "function :erlang.hash/2 is undefined or private, use erlang:phash2/2 instead"
-      end
+    test "annotates undefined function clause error with otp obsolete hints" do
+      assert blame_message(:erlang, & &1.hash(1, 2)) ==
+               "function :erlang.hash/2 is undefined or private, use erlang:phash2/2 instead"
+    end
+
+    test "annotates undefined key error with nil hints" do
+      assert blame_message(nil, & &1.foo) ==
+               "key :foo not found in: nil. If you are using the dot syntax, " <>
+                 "such as map.field, make sure the left-hand side of the dot is a map"
+
+      # we use `Code.eval_string/1` to escape the formatter and warnings
+      assert blame_message("nil.foo", &Code.eval_string/1) ==
+               "key :foo not found in: nil. If you are using the dot syntax, " <>
+                 "such as map.field, make sure the left-hand side of the dot is a map"
     end
 
     test "annotates undefined function clause error with nil hints" do
-      assert blame_message(nil, & &1.foo) ==
+      assert blame_message(nil, & &1.foo()) ==
                "function nil.foo/0 is undefined. If you are using the dot syntax, " <>
-                 "such as map.field or module.function(), make sure the left side of the dot is an atom or a map"
+                 "such as module.function(), make sure the left-hand side of " <>
+                 "the dot is a module atom"
+
+      assert blame_message("nil.foo()", &Code.eval_string/1) ==
+               "function nil.foo/0 is undefined. If you are using the dot syntax, " <>
+                 "such as module.function(), make sure the left-hand side of " <>
+                 "the dot is a module atom"
     end
 
     test "annotates key error with suggestions if keys are atoms" do
@@ -789,44 +928,58 @@ defmodule ExceptionTest do
     end
   end
 
-  if :erlang.system_info(:otp_release) >= '24' do
-    describe "error_info" do
-      test "badarg on erlang" do
-        assert message(:erlang, & &1.element("foo", "bar")) == """
-               errors were found at the given arguments:
+  describe "error_info" do
+    test "badarg on erlang" do
+      assert message(:erlang, & &1.element("foo", "bar")) == """
+             errors were found at the given arguments:
 
-                 * 1st argument: not an integer
-                 * 2nd argument: not a tuple
-               """
-      end
+               * 1st argument: not an integer
+               * 2nd argument: not a tuple
+             """
+    end
 
-      test "badarg on ets" do
-        ets = :ets.new(:foo, [])
-        :ets.delete(ets)
+    test "badarg on ets" do
+      ets = :ets.new(:foo, [])
+      :ets.delete(ets)
 
-        assert message(:ets, & &1.insert(ets, 1)) == """
-               errors were found at the given arguments:
+      assert message(:ets, & &1.insert(ets, 1)) == """
+             errors were found at the given arguments:
 
-                 * 1st argument: the table identifier does not refer to an existing ETS table
-                 * 2nd argument: not a tuple
-               """
-      end
+               * 1st argument: the table identifier does not refer to an existing ETS table
+               * 2nd argument: not a tuple
+             """
+    end
 
-      test "system_limit on counters" do
-        assert message(:counters, & &1.new(123_456_789_123_456_789_123_456_789, [])) == """
-               a system limit has been reached due to errors at the given arguments:
+    test "system_limit on counters" do
+      assert message(:counters, & &1.new(123_456_789_123_456_789_123_456_789, [])) == """
+             a system limit has been reached due to errors at the given arguments:
 
-                 * 1st argument: counters array size reached a system limit
-               """
-      end
+               * 1st argument: counters array size reached a system limit
+             """
+    end
+  end
 
-      defp message(arg, fun) do
-        try do
-          fun.(arg)
-        rescue
-          e -> Exception.message(e)
-        end
+  if System.otp_release() >= "25" do
+    describe "binary constructor error info" do
+      defp concat(a, b), do: a <> b
+
+      test "on binary concatenation" do
+        assert message(123, &concat(&1, "bar")) ==
+                 "construction of binary failed: segment 1 of type 'binary': expected a binary but got: 123"
+
+        assert message(~D[0001-02-03], &concat(&1, "bar")) ==
+                 "construction of binary failed: segment 1 of type 'binary': expected a binary but got: ~D[0001-02-03]"
       end
     end
   end
+
+  defp message(arg, fun) do
+    try do
+      fun.(arg)
+    rescue
+      e -> Exception.message(e)
+    end
+  end
+
+  def dummy_error_extras(_exception, _stacktrace), do: %{general: "foo"}
 end

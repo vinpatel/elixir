@@ -213,6 +213,12 @@ defmodule Inspect.AlgebraTest do
     assert render(group(doc), 5) == "a\nb\nc\ndhello"
   end
 
+  test "no limit doc" do
+    doc = no_limit(group(glue(glue("hello", "a"), "b")))
+    assert render(doc, 5) == "hello a b"
+    assert render(doc, :infinity) == "hello a b"
+  end
+
   test "collapse lines" do
     # Consistent with definitions
     assert collapse_lines(3) == {:doc_collapse, 3}
@@ -301,5 +307,13 @@ defmodule Inspect.AlgebraTest do
     assert sm.(["a" | "b"]) |> render(80) == "[a | b]"
     assert sm.(["a" | empty()]) |> render(80) == "[a]"
     assert sm.([empty() | "b"]) |> render(80) == "[b]"
+  end
+
+  test "formatting container_doc with empty and limit" do
+    opts = %Inspect.Opts{limit: 2}
+    value = ["a", empty(), "b"]
+
+    assert container_doc("[", value, "]", opts, fn d, _ -> d end, separator: ",") |> render(80) ==
+             "[a, b]"
   end
 end

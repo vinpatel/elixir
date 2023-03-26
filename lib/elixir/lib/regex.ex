@@ -7,7 +7,7 @@ defmodule Regex do
   in the [`:re` module documentation](`:re`).
 
   Regular expressions in Elixir can be created using the sigils
-  `~r` (see `Kernel.sigil_r/2`) or `~R` (see `Kernel.sigil_R/2`):
+  `~r` (see `sigil_r/2`) or `~R` (see `sigil_R/2`):
 
       # A simple regular expression that matches foo anywhere in the string
       ~r/foo/
@@ -38,35 +38,35 @@ defmodule Regex do
 
   The modifiers available when creating a Regex are:
 
-    * `unicode` (u) - enables Unicode specific patterns like `\p` and causes
-      character classes like `\w`, `\W`, `\s`, etc. to also match on Unicode
+    * `:unicode` (u) - enables Unicode specific patterns like `\p` and causes
+      character classes like `\w`, `\W`, `\s`, and the like to also match on Unicode
       (see examples below in "Character classes"). It expects valid Unicode
       strings to be given on match
 
-    * `caseless` (i) - adds case insensitivity
+    * `:caseless` (i) - adds case insensitivity
 
-    * `dotall` (s) - causes dot to match newlines and also set newline to
+    * `:dotall` (s) - causes dot to match newlines and also set newline to
       anycrlf; the new line setting can be overridden by setting `(*CR)` or
       `(*LF)` or `(*CRLF)` or `(*ANY)` according to `:re` documentation
 
-    * `multiline` (m) - causes `^` and `$` to mark the beginning and end of
+    * `:multiline` (m) - causes `^` and `$` to mark the beginning and end of
       each line; use `\A` and `\z` to match the end or beginning of the string
 
-    * `extended` (x) - whitespace characters are ignored except when escaped
+    * `:extended` (x) - whitespace characters are ignored except when escaped
       and allow `#` to delimit comments
 
-    * `firstline` (f) - forces the unanchored pattern to match before or at the
+    * `:firstline` (f) - forces the unanchored pattern to match before or at the
       first newline, though the matched text may continue over the newline
 
-    * `ungreedy` (U) - inverts the "greediness" of the regexp
+    * `:ungreedy` (U) - inverts the "greediness" of the regexp
       (the previous `r` option is deprecated in favor of `U`)
 
   The options not available are:
 
-    * `anchored` - not available, use `^` or `\A` instead
-    * `dollar_endonly` - not available, use `\z` instead
-    * `no_auto_capture` - not available, use `?:` instead
-    * `newline` - not available, use `(*CR)` or `(*LF)` or `(*CRLF)` or
+    * `:anchored` - not available, use `^` or `\A` instead
+    * `:dollar_endonly` - not available, use `\z` instead
+    * `:no_auto_capture` - not available, use `?:` instead
+    * `:newline` - not available, use `(*CR)` or `(*LF)` or `(*CRLF)` or
       `(*ANYCRLF)` or `(*ANY)` at the beginning of the regexp according to the
       `:re` documentation
 
@@ -155,7 +155,7 @@ defmodule Regex do
 
   defstruct re_pattern: nil, source: "", opts: "", re_version: ""
 
-  @type t :: %__MODULE__{re_pattern: term, source: binary, opts: binary}
+  @type t :: %__MODULE__{re_pattern: term, source: binary, opts: binary | [term]}
 
   defmodule CompileError do
     defexception message: "regex could not be compiled"
@@ -166,8 +166,8 @@ defmodule Regex do
 
   The given options can either be a binary with the characters
   representing the same regex options given to the
-  `~r` (see `Kernel.sigil_r/2`) sigil, or a list of options, as
-  expected by the Erlang's `:re` module.
+  `~r` (see `sigil_r/2`) sigil, or a list of options, as
+  expected by the Erlang's [`:re`](`:re`) module.
 
   It returns `{:ok, regex}` in case of success,
   `{:error, reason}` otherwise.
@@ -179,6 +179,12 @@ defmodule Regex do
 
       iex> Regex.compile("*foo")
       {:error, {'nothing to repeat', 0}}
+
+      iex> Regex.compile("foo", "i")
+      {:ok, ~r/foo/i}
+
+      iex> Regex.compile("foo", [:caseless])
+      {:ok, Regex.compile!("foo", [:caseless])}
 
   """
   @spec compile(binary, binary | [term]) :: {:ok, t} | {:error, any}
@@ -203,12 +209,17 @@ defmodule Regex do
   defp compile(source, opts, doc_opts, version) do
     case :re.compile(source, opts) do
       {:ok, re_pattern} ->
+        doc_opts = format_doc_opts(doc_opts, opts)
         {:ok, %Regex{re_pattern: re_pattern, re_version: version, source: source, opts: doc_opts}}
 
       error ->
         error
     end
   end
+
+  defp format_doc_opts(_doc_opts = "", _opts = []), do: ""
+  defp format_doc_opts(_doc_opts = "", opts), do: opts
+  defp format_doc_opts(doc_opts, _opts), do: doc_opts
 
   @doc """
   Compiles the regular expression and raises `Regex.CompileError` in case of errors.
@@ -274,7 +285,7 @@ defmodule Regex do
       iex> Regex.match?(~r/foo/, "bar")
       false
 
-  Elixir also provides `Kernel.=~/2` and `String.match?/2` as
+  Elixir also provides text-based match operator `=~/2` and function `String.match?/2` as
   an alternative to test strings against regular expressions and
   strings.
   """
@@ -283,12 +294,8 @@ defmodule Regex do
     safe_run(regex, string, [{:capture, :none}]) == :match
   end
 
-  @doc """
-  Returns `true` if the given `term` is a regex.
-  Otherwise returns `false`.
-  """
-  # TODO: deprecate permanently on Elixir v1.15
-  @doc deprecated: "Use Kernel.is_struct/2 or pattern match on %Regex{} instead"
+  @doc false
+  @deprecated "Use Kernel.is_struct/2 or pattern match on %Regex{} instead"
   def regex?(term)
   def regex?(%Regex{}), do: true
   def regex?(_), do: false
@@ -384,15 +391,21 @@ defmodule Regex do
   end
 
   @doc """
-  Returns the regex options as a string.
+  Returns the regex options, as a string or list depending on how
+  it was compiled.
+
+  See the documentation of `Regex.compile/2` for more information.
 
   ## Examples
 
       iex> Regex.opts(~r/foo/m)
       "m"
 
+      iex> Regex.opts(Regex.compile!("foo", [:caseless]))
+      [:caseless]
+
   """
-  @spec opts(t) :: String.t()
+  @spec opts(t) :: String.t() | [term]
   def opts(%Regex{opts: opts}) do
     opts
   end
@@ -614,17 +627,19 @@ defmodule Regex do
   Receives a regex, a binary and a replacement, returns a new
   binary where all matches are replaced by the replacement.
 
-  The replacement can be either a string or a function. The string
-  is used as a replacement for every match and it allows specific
-  captures to be accessed via `\N` or `\g{N}`, where `N` is the
-  capture. In case `\0` is used, the whole match is inserted. Note
-  that in regexes the backslash needs to be escaped, hence in practice
-  you'll need to use `\\N` and `\\g{N}`.
+  The replacement can be either a string or a function that returns a string.
+  The resulting string is used as a replacement for every match.
 
-  When the replacement is a function, the function may have arity
-  N where each argument maps to a capture, with the first argument
-  being the whole match. If the function expects more arguments
-  than captures found, the remaining arguments will receive `""`.
+  When the replacement is a string, it allows specific captures of the match
+  using brackets at the regex expression and accessing them in the replacement
+  via `\N` or `\g{N}`, where `N` is the number of the capture. In case `\0` is
+  used, the whole match is inserted. Note that in regexes the backslash needs
+  to be escaped, hence in practice you'll need to use `\\N` and `\\g{N}`.
+
+  When the replacement is a function, it allows specific captures too.
+  The function may have arity N where each argument maps to a capture,
+  with the first argument being the whole match. If the function expects more
+  arguments than captures found, the remaining arguments will receive `""`.
 
   ## Options
 
@@ -650,6 +665,9 @@ defmodule Regex do
 
       iex> Regex.replace(~r/a(b|d)c/, "abcadc", fn _, x -> "[#{x}]" end)
       "[b][d]"
+
+      iex> Regex.replace(~r/(\w+)@(\w+).(\w+)/, "abc@def.com", fn _full, _c1, _c2, c3 -> "TLD: #{c3}" end)
+      "TLD: com"
 
       iex> Regex.replace(~r/a/, "abcadc", "A", global: false)
       "Abcadc"
@@ -805,7 +823,7 @@ defmodule Regex do
     |> IO.iodata_to_binary()
   end
 
-  @escapable '.^$*+?()[]{}|#-\\\t\n\v\f\r\s'
+  @escapable :binary.bin_to_list(".^$*+?()[]{}|#-\\\t\n\v\f\r\s")
 
   defp escape(<<char, rest::binary>>, length, original) when char in @escapable do
     escape_char(rest, length, original, char)

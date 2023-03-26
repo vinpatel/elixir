@@ -16,12 +16,12 @@ defmodule Date.Range do
   @type t :: %__MODULE__{
           first: Date.t(),
           last: Date.t(),
-          first_in_iso_days: iso_days(),
-          last_in_iso_days: iso_days(),
+          first_in_iso_days: days(),
+          last_in_iso_days: days(),
           step: pos_integer | neg_integer
         }
 
-  @typep iso_days() :: Calendar.iso_days()
+  @typep days() :: integer()
 
   @enforce_keys [:first, :last, :first_in_iso_days, :last_in_iso_days, :step]
   defstruct [:first, :last, :first_in_iso_days, :last_in_iso_days, :step]
@@ -75,7 +75,7 @@ defmodule Date.Range do
             step: step
           } = range
         ) do
-      {:ok, size(range), &slice(first + &1 * step, step, &2, calendar)}
+      {:ok, size(range), &slice(first + &1 * step, step + &3 - 1, &2, calendar)}
     end
 
     # TODO: Remove me on v2.0
@@ -211,11 +211,11 @@ defmodule Date.Range do
     import Kernel, except: [inspect: 2]
 
     def inspect(%Date.Range{first: first, last: last, step: 1}, _) do
-      "#DateRange<" <> inspect(first) <> ", " <> inspect(last) <> ">"
+      "Date.range(" <> inspect(first) <> ", " <> inspect(last) <> ")"
     end
 
     def inspect(%Date.Range{first: first, last: last, step: step}, _) do
-      "#DateRange<" <> inspect(first) <> ", " <> inspect(last) <> ", #{step}>"
+      "Date.range(" <> inspect(first) <> ", " <> inspect(last) <> ", #{step})"
     end
 
     # TODO: Remove me on v2.0

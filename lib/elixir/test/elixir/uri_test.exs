@@ -36,11 +36,11 @@ defmodule URITest do
              "foo%5B%5D=%2B%3D%2F%3F%26%23+%C3%91"
 
     assert_raise ArgumentError, fn ->
-      URI.encode_query([{"foo", 'bar'}])
+      URI.encode_query([{"foo", ~c"bar"}])
     end
 
     assert_raise ArgumentError, fn ->
-      URI.encode_query([{'foo', "bar"}])
+      URI.encode_query([{~c"foo", "bar"}])
     end
   end
 
@@ -279,6 +279,31 @@ defmodule URITest do
     end
   end
 
+  test "http://http://http://@http://http://?http://#http://" do
+    assert URI.parse("http://http://http://@http://http://?http://#http://") ==
+             %URI{
+               scheme: "http",
+               authority: "http:",
+               userinfo: nil,
+               host: "http",
+               port: 80,
+               path: "//http://@http://http://",
+               query: "http://",
+               fragment: "http://"
+             }
+
+    assert URI.new!("http://http://http://@http://http://?http://#http://") ==
+             %URI{
+               scheme: "http",
+               userinfo: nil,
+               host: "http",
+               port: 80,
+               path: "//http://@http://http://",
+               query: "http://",
+               fragment: "http://"
+             }
+  end
+
   test "default_port/1,2" do
     assert URI.default_port("http") == 80
 
@@ -398,6 +423,120 @@ defmodule URITest do
 
     assert URI.merge(URI.new!(page_url), URI.new!(image_url)) |> to_string ==
              "https://images.example.com/t/1600x/https://images.example.com/foo.jpg"
+  end
+
+  test "merge/2 (with RFC examples)" do
+    # These are examples from:
+    #
+    # https://www.rfc-editor.org/rfc/rfc3986#section-5.4.1
+    # https://www.rfc-editor.org/rfc/rfc3986#section-5.4.2
+    #
+    # They are taken verbatim from the above document for easy comparison
+
+    base = "http://a/b/c/d;p?q"
+
+    rel_and_result = %{
+      "g:h" => "g:h",
+      "g" => "http://a/b/c/g",
+      "./g" => "http://a/b/c/g",
+      "g/" => "http://a/b/c/g/",
+      "/g" => "http://a/g",
+      "//g" => "http://g",
+      "?y" => "http://a/b/c/d;p?y",
+      "g?y" => "http://a/b/c/g?y",
+      "#s" => "http://a/b/c/d;p?q#s",
+      "g#s" => "http://a/b/c/g#s",
+      "g?y#s" => "http://a/b/c/g?y#s",
+      ";x" => "http://a/b/c/;x",
+      "g;x" => "http://a/b/c/g;x",
+      "g;x?y#s" => "http://a/b/c/g;x?y#s",
+      "" => "http://a/b/c/d;p?q",
+      "." => "http://a/b/c/",
+      "./" => "http://a/b/c/",
+      ".." => "http://a/b/",
+      "../" => "http://a/b/",
+      "../g" => "http://a/b/g",
+      "../.." => "http://a/",
+      "../../" => "http://a/",
+      "../../g" => "http://a/g",
+      "../../../g" => "http://a/g",
+      "../../../../g" => "http://a/g",
+      "/./g" => "http://a/g",
+      "/../g" => "http://a/g",
+      "g." => "http://a/b/c/g.",
+      ".g" => "http://a/b/c/.g",
+      "g.." => "http://a/b/c/g..",
+      "..g" => "http://a/b/c/..g",
+      "./../g" => "http://a/b/g",
+      "./g/." => "http://a/b/c/g/",
+      "g/./h" => "http://a/b/c/g/h",
+      "g/../h" => "http://a/b/c/h",
+      "g;x=1/./y" => "http://a/b/c/g;x=1/y",
+      "g;x=1/../y" => "http://a/b/c/y",
+      "g?y/./x" => "http://a/b/c/g?y/./x",
+      "g?y/../x" => "http://a/b/c/g?y/../x",
+      "g#s/./x" => "http://a/b/c/g#s/./x",
+      "g#s/../x" => "http://a/b/c/g#s/../x",
+      "http:g" => "http:g"
+    }
+
+    for {rel, result} <- rel_and_result do
+      assert URI.merge(base, rel) |> URI.to_string() == result
+    end
+  end
+
+  test "append_query/2" do
+    assert URI.append_query(URI.parse("http://example.com/?x=1"), "x=2").query == "x=1&x=2"
+    assert URI.append_query(URI.parse("http://example.com/?x=1&"), "x=2").query == "x=1&x=2"
+  end
+
+  describe "append_path/2" do
+    test "with valid paths" do
+      examples = [
+        {"http://example.com", "/", "http://example.com/"},
+        {"http://example.com/", "/foo", "http://example.com/foo"},
+        {"http://example.com/foo", "/bar", "http://example.com/foo/bar"},
+        {"http://example.com/foo", "/bar/", "http://example.com/foo/bar/"},
+        {"http://example.com/foo", "/bar/baz", "http://example.com/foo/bar/baz"},
+        {"http://example.com/foo?var=1", "/bar/", "http://example.com/foo/bar/?var=1"},
+        {"https://example.com/page/", "/urn:example:page",
+         "https://example.com/page/urn:example:page"}
+      ]
+
+      for {base_url, path, expected_result} <- examples do
+        result =
+          base_url
+          |> URI.parse()
+          |> URI.append_path(path)
+          |> URI.to_string()
+
+        assert result == expected_result, """
+        Path did not append as expected
+
+          base_url: #{inspect(base_url)}
+          path: #{inspect(path)}
+
+          result:          #{inspect(result)}
+          expected_result: #{inspect(expected_result)}
+        """
+      end
+    end
+
+    test "errors on invalid paths" do
+      base_uri = URI.parse("http://example.com")
+
+      assert_raise ArgumentError,
+                   ~S|path must start with "/", got: "foo"|,
+                   fn ->
+                     URI.append_path(base_uri, "foo")
+                   end
+
+      assert_raise ArgumentError,
+                   ~S|path cannot start with "//", got: "//foo"|,
+                   fn ->
+                     URI.append_path(base_uri, "//foo")
+                   end
+    end
   end
 
   ## Deprecate API
@@ -545,6 +684,36 @@ defmodule URITest do
       }
 
       assert URI.parse("ldap://ldap.example.com/cn=John%20Doe,dc=foo,dc=com") == expected_uri
+    end
+
+    test "works with WebSocket scheme" do
+      expected_uri = %URI{
+        authority: "ws.example.com",
+        fragment: "content",
+        host: "ws.example.com",
+        path: "/path/to",
+        port: 80,
+        query: "here",
+        scheme: "ws",
+        userinfo: nil
+      }
+
+      assert URI.parse("ws://ws.example.com/path/to?here#content") == expected_uri
+    end
+
+    test "works with WebSocket Secure scheme" do
+      expected_uri = %URI{
+        authority: "ws.example.com",
+        fragment: "content",
+        host: "ws.example.com",
+        path: "/path/to",
+        port: 443,
+        query: "here",
+        scheme: "wss",
+        userinfo: nil
+      }
+
+      assert URI.parse("wss://ws.example.com/path/to?here#content") == expected_uri
     end
 
     test "splits authority" do

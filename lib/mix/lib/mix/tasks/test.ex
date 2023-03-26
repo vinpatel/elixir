@@ -6,7 +6,6 @@ defmodule Mix.Tasks.Test do
   @compile {:no_warn_undefined, [ExUnit, ExUnit.Filters]}
   @shortdoc "Runs a project's tests"
   @recursive true
-  @preferred_cli_env :test
 
   @moduledoc ~S"""
   Runs the tests for a project.
@@ -18,18 +17,18 @@ defmodule Mix.Tasks.Test do
   A list of files and/or directories can be given after the task
   name in order to select the files to run:
 
-      mix test test/some/particular/file_test.exs
-      mix test test/some/particular/dir
+      $ mix test test/some/particular/file_test.exs
+      $ mix test test/some/particular/dir
 
   Tests in umbrella projects can be run from the root by specifying
   the full suite path, including `apps/my_app/test`, in which case
   recursive tests for other child apps will be skipped completely:
 
       # To run all tests for my_app from the umbrella root
-      mix test apps/my_app/test
+      $ mix test apps/my_app/test
 
       # To run a given test file on my_app from the umbrella root
-      mix test apps/my_app/test/some/particular/file_test.exs
+      $ mix test apps/my_app/test/some/particular/file_test.exs
 
   ## Understanding test results
 
@@ -71,7 +70,7 @@ defmodule Mix.Tasks.Test do
   tests run concurrently.
 
   Finally, how many tests we have run, how many of them
-  failed, how many were invalid, etc.
+  failed, how many were invalid, and so on.
 
   ### Understanding test failures
 
@@ -86,9 +85,9 @@ defmodule Mix.Tasks.Test do
       test/foo_test.exs:5
 
   If you want to re-run only this test, all you need to do is to
-  copy the line above and past it in front of `mix test`:
+  copy the line above and paste it in front of `mix test`:
 
-      mix test test/foo_test.exs:5
+      $ mix test test/foo_test.exs:5
 
   Then we show the error message, code snippet, and general information
   about the failed test:
@@ -138,6 +137,8 @@ defmodule Mix.Tasks.Test do
     * `--max-failures` - the suite stops evaluating tests when this number of test
       failures is reached. It runs all tests if omitted
 
+    * `--no-all-warnings` - prints only warnings from files currently compiled (instead of all)
+
     * `--no-archives-check` - does not check archives
 
     * `--no-color` - disables color in the output
@@ -160,7 +161,7 @@ defmodule Mix.Tasks.Test do
 
     * `--preload-modules` - preloads all modules defined in applications
 
-    * `--profile-require` - profiles the time spent to require test files.
+    * `--profile-require time` - profiles the time spent to require test files.
       Used only for debugging. The test suite does not run.
 
     * `--raise` - raises if the test suite failed
@@ -184,11 +185,18 @@ defmodule Mix.Tasks.Test do
     * `--warnings-as-errors` - (since v1.12.0) treats warnings as errors and returns a non-zero
       exit status. This option only applies to test files. To treat warnings as errors during
       compilation and during tests, run:
-          MIX_ENV=test mix do compile --warnings-as-errors, test --warnings-as-errors
+          MIX_ENV=test mix do compile --warnings-as-errors + test --warnings-as-errors
 
   ## Configuration
 
   These configurations can be set in the `def project` section of your `mix.exs`:
+
+    * `:test_coverage` - a set of options to be passed down to the coverage
+      mechanism. See the "Coverage" section for more information
+
+    * `:test_elixirc_options` - the compiler options to used when
+      loading/compiling test files. By default it disables the debug chunk
+      and docs chunk
 
     * `:test_paths` - list of paths containing test files. Defaults to
       `["test"]` if the `test` directory exists; otherwise, it defaults to `[]`.
@@ -199,9 +207,6 @@ defmodule Mix.Tasks.Test do
     * `:warn_test_pattern` - a pattern to match potentially misnamed test files
       and display a warning. Defaults to `*_test.ex`
 
-    * `:test_coverage` - a set of options to be passed down to the coverage
-      mechanism. See the "Coverage" section for more information
-
   ## Coloring
 
   Coloring is enabled by default on most Unix terminals. They are also
@@ -209,7 +214,7 @@ defmodule Mix.Tasks.Test do
   explicitly enabled for the current user in the registry by running
   the following command:
 
-      reg add HKCU\Console /v VirtualTerminalLevel /t REG_DWORD /d 1
+      $ reg add HKCU\Console /v VirtualTerminalLevel /t REG_DWORD /d 1
 
   After running the command above, you must restart your current console.
 
@@ -225,13 +230,13 @@ defmodule Mix.Tasks.Test do
   Then, whenever desired, those tests could be included in the run via the
   `--include` option:
 
-      mix test --include external:true
+      $ mix test --include external:true
 
   The example above will run all tests that have the external option set to
   `true`. It is also possible to include all examples that have a given tag,
   regardless of its value:
 
-      mix test --include external
+      $ mix test --include external
 
   Note that all tests are included by default, so unless they are excluded
   first (either in the test helper or via the `--exclude` option) the
@@ -240,38 +245,56 @@ defmodule Mix.Tasks.Test do
   For this reason, Mix also provides an `--only` option that excludes all
   tests and includes only the given ones:
 
-      mix test --only external
+      $ mix test --only external
 
   Which is similar to:
 
-      mix test --include external --exclude test
+      $ mix test --include external --exclude test
 
   It differs in that the test suite will fail if no tests are executed when the `--only` option is used.
 
   In case a single file is being tested, it is possible to pass one or more specific
   line numbers to run only those given tests:
 
-      mix test test/some/particular/file_test.exs:12
+      $ mix test test/some/particular/file_test.exs:12
 
   Which is equivalent to:
 
-      mix test --exclude test --include line:12 test/some/particular/file_test.exs
+      $ mix test --exclude test --include line:12 test/some/particular/file_test.exs
 
   Or:
 
-      mix test test/some/particular/file_test.exs:12:24
+      $ mix test test/some/particular/file_test.exs:12:24
 
   Which is equivalent to:
 
-      mix test --exclude test --include line:12 --include line:24 test/some/particular/file_test.exs
+      $ mix test --exclude test --include line:12 --include line:24 test/some/particular/file_test.exs
 
   If a given line starts a `describe` block, that line filter runs all tests in it.
   Otherwise, it runs the closest test on or before the given line number.
 
   ## Coverage
 
-  The `:test_coverage` configures the coverage tool and reports generated
-  by the `--cover` flag. It accepts the following options:
+  Elixir provides built-in line-based test coverage via the `--cover` flag.
+  The test coverages shows which lines of code and in which files were executed
+  during the test run.
+
+  ### Limitations
+
+  Coverage in Elixir has the following limitations:
+
+    * Literals, such as atoms, strings, and numbers, are not traced by coverage.
+      For example, if a function simply returns `:ok`, the atom `:ok` itself is
+      never taken into account by coverage;
+
+    * Macros, such as the ones defined by `defmacro/2` and `defguard/2`, and code
+      invoked only by macros are never considered as covered, unless they are also
+      invoked during the tests themselves. That's because macros are invoked at
+      compilation time, before the test coverage instrumentation begins;
+
+  ### Configuratiuon
+
+  The `:test_coverage` configures the coverage tool and accepts the following options:
 
     * `:output` - the output directory for cover results. Defaults to `"cover"`.
 
@@ -331,10 +354,10 @@ defmodule Mix.Tasks.Test do
   For example, to split a test suite into 4 partitions and run them, you would
   use the following commands:
 
-      MIX_TEST_PARTITION=1 mix test --partitions 4
-      MIX_TEST_PARTITION=2 mix test --partitions 4
-      MIX_TEST_PARTITION=3 mix test --partitions 4
-      MIX_TEST_PARTITION=4 mix test --partitions 4
+      $ MIX_TEST_PARTITION=1 mix test --partitions 4
+      $ MIX_TEST_PARTITION=2 mix test --partitions 4
+      $ MIX_TEST_PARTITION=3 mix test --partitions 4
+      $ MIX_TEST_PARTITION=4 mix test --partitions 4
 
   The test files are sorted upfront in a round-robin fashion. Note the partition
   itself is given as an environment variable so it can be accessed in config files
@@ -369,7 +392,7 @@ defmodule Mix.Tasks.Test do
   or similar to emit newlines whenever there is a change, which will cause your test
   suite to re-run:
 
-      fswatch lib test | mix test --listen-on-stdin
+      $ fswatch lib test | mix test --listen-on-stdin
 
   This can be combined with the `--stale` option to re-run only the test files that
   have changed as well as the tests that have gone stale due to changes in `lib`.
@@ -385,6 +408,7 @@ defmodule Mix.Tasks.Test do
   """
 
   @switches [
+    all_warnings: :boolean,
     force: :boolean,
     color: :boolean,
     cover: :boolean,
@@ -424,8 +448,13 @@ defmodule Mix.Tasks.Test do
     if not Mix.Task.recursing?() do
       do_run(opts, args, files)
     else
+      parent_umbrella = Path.dirname(Mix.Project.parent_umbrella_project_file())
+
       {files_in_apps_path, files_not_in_apps_path} =
-        Enum.split_with(files, &String.starts_with?(&1, "apps/"))
+        files
+        |> Enum.map(&Path.expand(&1, parent_umbrella))
+        |> Enum.map(&Path.relative_to(&1, parent_umbrella))
+        |> Enum.split_with(&String.starts_with?(&1, "apps/"))
 
       app = Mix.Project.config()[:app]
       current_app_path = "apps/#{app}/"
@@ -451,14 +480,7 @@ defmodule Mix.Tasks.Test do
   end
 
   defp do_run(opts, args, files) do
-    if opts[:listen_on_stdin] do
-      System.at_exit(fn _ ->
-        IO.gets(:stdio, "")
-        Mix.shell().info("Restarting...")
-        :init.restart()
-        Process.sleep(:infinity)
-      end)
-    end
+    _ = Mix.Project.get!()
 
     unless System.get_env("MIX_ENV") || Mix.env() == :test do
       Mix.raise("""
@@ -469,10 +491,21 @@ defmodule Mix.Tasks.Test do
 
             MIX_ENV=test mix test.another
 
-        2. set the :preferred_cli_env for a command inside "def project" in your mix.exs:
+        2. set the :preferred_envs for "def cli" in your mix.exs:
 
-            preferred_cli_env: ["test.another": :test]
+            def cli do
+              [preferred_envs: ["test.another": :test]]
+            end
       """)
+    end
+
+    if opts[:listen_on_stdin] do
+      System.at_exit(fn _ ->
+        IO.gets(:stdio, "")
+        Mix.shell().info("Restarting...")
+        System.restart()
+        Process.sleep(:infinity)
+      end)
     end
 
     # Load ExUnit before we compile anything in case we are compiling
@@ -520,6 +553,7 @@ defmodule Mix.Tasks.Test do
     ExUnit.configure(merge_helper_opts(ex_unit_opts))
 
     # Finally parse, require and load the files
+    test_elixirc_options = project[:test_elixirc_options] || []
     test_files = parse_files(files, shell, test_paths)
     test_pattern = project[:test_pattern] || "*_test.exs"
     warn_test_pattern = project[:warn_test_pattern] || "*_test.ex"
@@ -532,7 +566,7 @@ defmodule Mix.Tasks.Test do
 
     display_warn_test_pattern(test_files, test_pattern, matched_test_files, warn_test_pattern)
 
-    case CT.require_and_run(matched_test_files, test_paths, opts) do
+    case CT.require_and_run(matched_test_files, test_paths, test_elixirc_options, opts) do
       {:ok, %{excluded: excluded, failures: failures, total: total}} ->
         Mix.shell(shell)
         cover && cover.()

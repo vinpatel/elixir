@@ -9,8 +9,10 @@ defmodule Mix.Tasks.Compile do
   It simply runs the compilers registered in your project and returns
   a tuple with the compilation status and a list of diagnostics.
 
-  Before compiling code, it loads the code in all dependencies and
-  perform a series of checks to ensure the project is up to date.
+  Before compiling code, it performs a series of checks to ensure all
+  dependencies are compiled and the project is up to date. Then the
+  code path of your Elixir system is pruned to only contain the dependencies
+  and applications that you have explicitly listed in your `mix.exs`.
 
   ## Configuration
 
@@ -20,9 +22,6 @@ defmodule Mix.Tasks.Compile do
     * `:consolidate_protocols` - when `true`, runs protocol
       consolidation via the `mix compile.protocols` task. The default
       value is `true`.
-
-    * `:build_embedded` - when `true`, embeds all code and priv
-      content in the `_build` directory instead of using symlinks.
 
     * `:build_path` - the directory where build artifacts
       should be written to. This option is intended only for
@@ -37,23 +36,29 @@ defmodule Mix.Tasks.Compile do
   To see documentation for each specific compiler, you must
   invoke `help` directly for the compiler command:
 
-      mix help compile.elixir
-      mix help compile.erlang
+      $ mix help compile.elixir
+      $ mix help compile.erlang
 
   You can get a list of all compilers by running:
 
-      mix compile --list
+      $ mix compile --list
 
   ## Command line options
 
     * `--erl-config` - path to an Erlang term file that will be loaded as Mix config
     * `--force` - forces compilation
     * `--list` - lists all enabled compilers
-    * `--no-app-loading` - does not load .app resource files (including from deps) before compiling
+    * `--no-all-warnings` - prints only warnings from files currently compiled (instead of all)
+    * `--no-app-loading` - does not load .app resource file after compilation
     * `--no-archives-check` - skips checking of archives
     * `--no-compile` - does not actually compile, only loads code and perform checks
     * `--no-deps-check` - skips checking of dependencies
     * `--no-elixir-version-check` - does not check Elixir version
+    * `--no-optional-deps` - does not compile or load optional deps. Useful for testing
+      if a library still successfully compiles without optional dependencies (which is the
+      default case with dependencies)
+    * `--no-prune-code-paths` - do not prune code paths before compilation, this keeps
+      the entirety of Erlang/OTP available on the project starts
     * `--no-protocol-consolidation` - skips protocol consolidation
     * `--no-validate-compile-env` - does not validate the application compile environment
     * `--return-errors` - returns error status and diagnostics instead of exiting on error
@@ -108,7 +113,7 @@ defmodule Mix.Tasks.Compile do
     sorted = Enum.sort(docs)
 
     Enum.each(sorted, fn {task, doc} ->
-      shell.info(format('mix ~-#{max}s # ~ts', [task, doc]))
+      shell.info(format(~c"mix ~-#{max}s # ~ts", [task, doc]))
     end)
 
     consolidate_protocols? = Mix.Project.config()[:consolidate_protocols]
@@ -120,13 +125,14 @@ defmodule Mix.Tasks.Compile do
   @impl true
   def run(args) do
     Mix.Project.get!()
-    Mix.Task.run("loadpaths", args)
+
+    # Don't bother setting up the load paths because compile.all
+    # will load applications and set them up anyway.
+    Mix.Task.run("loadpaths", ["--no-deps-loading" | args])
 
     {opts, _, _} = OptionParser.parse(args, switches: [erl_config: :string])
     load_erl_config(opts)
 
-    # We invoke compile.all even on --no-compile because compile.all
-    # loads the apps, and we still want to do that.
     {res, diagnostics} =
       Mix.Task.run("compile.all", args)
       |> List.wrap()
@@ -134,6 +140,18 @@ defmodule Mix.Tasks.Compile do
       |> Enum.reduce({:noop, []}, &merge_diagnostics/2)
 
     config = Mix.Project.config()
+
+    # If we are in an umbrella project, now load paths from all children.
+    if Mix.Project.umbrella?(config) do
+      loaded_paths =
+        Mix.Project.apps_paths(config)
+        |> Map.keys()
+        |> Mix.AppLoader.load_apps(Mix.Dep.cached(), config, false, [], fn
+          {_app, path}, acc -> if path, do: [path | acc], else: acc
+        end)
+
+      Code.prepend_paths(loaded_paths -- :code.get_path())
+    end
 
     consolidate_protocols? =
       config[:consolidate_protocols] and "--no-protocol-consolidation" not in args

@@ -65,6 +65,27 @@ defmodule ExUnit.CallbacksTest do
     assert capture_io(fn -> ExUnit.run() end) =~ "1 test, 0 failures"
   end
 
+  test "named callbacks support {module, function} tuples" do
+    defmodule NamedCallbacksTupleTest do
+      use ExUnit.Case
+
+      setup_all {__MODULE__, :setup_1}
+      setup [{__MODULE__, :setup_2}, {__MODULE__, :setup_3}]
+
+      test "callbacks", context do
+        assert context[:setup_1]
+        assert context[:setup_2]
+        assert context[:setup_3]
+      end
+
+      def setup_1(_), do: [setup_1: true]
+      def setup_2(_), do: [setup_2: true]
+      def setup_3(_), do: [setup_3: true]
+    end
+
+    assert capture_io(fn -> ExUnit.run() end) =~ "1 test, 0 failures"
+  end
+
   test "doesn't choke on setup errors" do
     defmodule SetupTest do
       use ExUnit.Case
@@ -313,23 +334,76 @@ defmodule ExUnit.CallbacksTest do
            """
   end
 
+  test "raises an error when using setup/2 with something other than a block" do
+    message =
+      "setup/2 requires a block as the second argument after the context, got: :start_counter"
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_quoted(
+        quote do
+          defmodule SetupWithoutBlockTest do
+            use ExUnit.Case
+            setup context, :start_counter
+          end
+        end
+      )
+    end
+  end
+
+  test "raises an error when using setup_all/2 with something other than a block" do
+    message =
+      "setup_all/2 requires a block as the second argument after the context, got: :start_counter"
+
+    assert_raise ArgumentError, message, fn ->
+      Code.eval_quoted(
+        quote do
+          defmodule SetupWithoutBlockTest do
+            use ExUnit.Case
+            setup_all context, :start_counter
+          end
+        end
+      )
+    end
+  end
+
   test "raises an error when setting an invalid callback in setup" do
     defmodule SetupErrorTest do
       use ExUnit.Case
 
-      setup do
-        {:ok, "foo"}
-      end
-
-      test "ok" do
-        :ok
-      end
+      setup do: {:ok, "foo"}
+      test "ok", do: :ok
     end
 
-    assert capture_io(fn -> ExUnit.run() end) =~
-             "** (RuntimeError) expected ExUnit callback in " <>
-               "ExUnit.CallbacksTest.SetupErrorTest to return " <>
-               ":ok | keyword | map, got {:ok, \"foo\"} instead"
+    output = capture_io(fn -> ExUnit.run() end)
+
+    assert output =~
+             "** (RuntimeError) expected ExUnit setup callback in " <>
+               "ExUnit.CallbacksTest.SetupErrorTest to return :ok | keyword | map, " <>
+               "got {:ok, \"foo\"} instead"
+
+    # Make sure that at least the right file where the setup/setup_all call is defined is included
+    # in the stacktrace.
+    assert output =~ ~r/.*callbacks_test\.exs:\d+/
+  end
+
+  test "raises an error when setting an invalid callback in setup_all" do
+    defmodule SetupAllErrorTest do
+      use ExUnit.Case
+
+      setup_all do: {:ok, "foo"}
+      test "ok", do: :ok
+    end
+
+    output = capture_io(fn -> ExUnit.run() end)
+
+    assert output =~
+             "** (RuntimeError) expected ExUnit setup_all callback in " <>
+               "ExUnit.CallbacksTest.SetupAllErrorTest to return :ok | keyword | map, " <>
+               "got {:ok, \"foo\"} instead"
+
+    # Make sure that at least the right file where the setup/setup_all call is defined is included
+    # in the stacktrace.
+    assert output =~ ~r/.*callbacks_test\.exs:\d+/
   end
 
   test "raises an error when overriding a reserved callback key in setup" do
@@ -346,7 +420,7 @@ defmodule ExUnit.CallbacksTest do
     end
 
     assert capture_io(fn -> ExUnit.run() end) =~
-             "** (RuntimeError) ExUnit callback in " <>
+             "** (RuntimeError) ExUnit setup callback in " <>
                "ExUnit.CallbacksTest.SetupReservedTest is " <>
                "trying to set reserved field :file to \"foo\""
   end

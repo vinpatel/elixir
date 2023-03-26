@@ -55,7 +55,7 @@ defmodule PathHelpers do
   end
 
   defp run_cmd(executable, args) do
-    '#{executable} #{IO.chardata_to_string(args)}#{redirect_std_err_on_win()}'
+    ~c"#{executable} #{IO.chardata_to_string(args)}#{redirect_std_err_on_win()}"
     |> :os.cmd()
     |> :binary.list_to_bin()
   end
@@ -95,8 +95,12 @@ assert_timeout = String.to_integer(System.get_env("ELIXIR_ASSERT_TIMEOUT") || "5
 epmd_exclude = if match?({:win32, _}, :os.type()), do: [epmd: true], else: []
 os_exclude = if PathHelpers.windows?(), do: [unix: true], else: [windows: true]
 
+{line_exclude, line_include} =
+  if line = System.get_env("LINE"), do: {[:test], [line: line]}, else: {[], []}
+
 ExUnit.start(
-  trace: "--trace" in System.argv(),
+  trace: !!System.get_env("TRACE"),
   assert_receive_timeout: assert_timeout,
-  exclude: epmd_exclude ++ os_exclude
+  exclude: epmd_exclude ++ os_exclude ++ line_exclude,
+  include: line_include
 )

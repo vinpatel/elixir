@@ -25,10 +25,11 @@ defmodule IEx do
   aren't explicitly documented and where the function name is in the form
   of `__foo__`.
 
-  Autocomplete may not be available on some Windows shells. You may need
-  to pass the `--werl` option when starting IEx, such as `iex --werl`
-  (or `iex.bat --werl` if using PowerShell). `--werl` may be permanently
-  enabled by setting the `IEX_WITH_WERL` environment variable to `1`.
+  Autocomplete is available by default on Windows shells from Erlang/OTP 26.
+  In earlier versions, you may need to pass the `--werl` option when starting
+  IEx, such as `iex --werl` (or `iex.bat --werl` if using PowerShell).
+  `--werl` may be permanently enabled by setting the `IEX_WITH_WERL`
+  environment variable to `1`.
 
   ## Encoding and coloring
 
@@ -40,11 +41,12 @@ defmodule IEx do
   PowerShell).
 
   Similarly, ANSI coloring is enabled by default on most Unix terminals.
-  They are also available on Windows consoles from Windows 10, although
-  it must be explicitly enabled for the current user in the registry by
-  running the following command:
+  They are also available on Windows consoles from Windows 10 and on
+  Erlang/OTP 26 or later. For earlier Erlang/OTP versions, you can
+  explicitly enable it for the current user in the registry by running
+  the following command:
 
-      reg add HKCU\Console /v VirtualTerminalLevel /t REG_DWORD /d 1
+      $ reg add HKCU\Console /v VirtualTerminalLevel /t REG_DWORD /d 1
 
   After running the command above, you must restart your current console.
 
@@ -53,7 +55,7 @@ defmodule IEx do
   It is possible to get shell history by passing some options that enable it
   in the VM. This can be done on a per-need basis when starting IEx:
 
-      iex --erl "-kernel shell_history enabled"
+      $ iex --erl "-kernel shell_history enabled"
 
   If you would rather enable it on your system as a whole, you can use
   the `ERL_AFLAGS` environment variable and make sure that it is set
@@ -61,15 +63,15 @@ defmodule IEx do
 
   On Unix-like / Bash:
 
-      export ERL_AFLAGS="-kernel shell_history enabled"
+      $ export ERL_AFLAGS="-kernel shell_history enabled"
 
   On Windows:
 
-      set ERL_AFLAGS "-kernel shell_history enabled"
+      $ set ERL_AFLAGS "-kernel shell_history enabled"
 
   On Windows 10 / PowerShell:
 
-      $env:ERL_AFLAGS = "-kernel shell_history enabled"
+      $ $env:ERL_AFLAGS = "-kernel shell_history enabled"
 
   ## Expressions in IEx
 
@@ -146,7 +148,7 @@ defmodule IEx do
         2 | |> IO.puts()
           | ^
 
-  Note however the above does not work for `+/2` and `-/2`, as they
+  Note, however, the above does not work for `+/2` and `-/2`, as they
   are ambiguous with the unary `+/1` and `-/1`:
 
       iex(1)> 1
@@ -170,27 +172,49 @@ defmodule IEx do
 
   If you are connected to remote shell, it remains alive after disconnection.
 
-  ## Prying and breakpoints
+  ## `dbg` and breakpoints
 
-  IEx also has the ability to set breakpoints on Elixir code and
-  "pry" into running processes. This allows the developer to have
-  an IEx session run inside a given function.
+  IEx integrates with `Kernel.dbg/2` and introduces a backend that
+  can pause code execution. To enable it, you must pass `--dbg pry`:
 
-  `IEx.pry/0` can be used when you are able to modify the source
-  code directly and recompile it:
+      $ iex --dbg pry
+
+  For example, take the following function:
 
       def my_fun(arg1, arg2) do
-        require IEx; IEx.pry()
+        dbg(arg1 + arg2)
         ... implementation ...
       end
 
-  When the code is executed, it will ask you for permission to be
-  introspected.
+  When the code is executed with `iex` (most often by calling
+  `iex --dbg pry -S mix`), it will ask you permission to use "pry".
+  If you agree, it will start an IEx shell in the context of the function
+  above, with access to its variables, imports, and aliases. However,
+  you can only access existing values, it is not possible to access
+  private functions nor change the execution itself (hence the name
+  "pry").
 
-  Alternatively, you can use `IEx.break!/4` to setup a breakpoint
-  on a given module, function and arity you have no control of.
-  While `IEx.break!/4` is more flexible, it does not contain
-  information about imports and aliases from the source code.
+  When using `|> dbg()` at the end of a pipeline, you can pry each
+  step of the pipeline. You can type `n` whenever you want to jump
+  into the next pipe. Type `continue` when you want to execute all
+  of the steps but stay within the pried process. Type `respawn` when
+  you want to leave the pried process and start a new shell.
+
+  Alternatively, you can start a pry session directly, without `dbg/2`
+  by calling `IEx.pry/0`.
+
+  IEx also allows you to set breakpoints to start pry sessions
+  on a given module, function, and arity you have no control of
+  via `IEx.break!/4`. Similar to pipelines in `dbg()`, `IEx.break!/4`
+  allows you to debug a function line by line and access its variables.
+  However, breakpoints do not contain information about imports and
+  aliases from the source code.
+
+  When using `dbg` or breakpoints with tests, remember to pass the
+  `--trace` to `mix test` to avoid running into timeouts:
+
+      $ iex -S mix test --trace
+      $ iex -S mix test path/to/file:line --trace
 
   ## The User switch command
 
@@ -266,7 +290,7 @@ defmodule IEx do
       $ iex --sname bar
       iex(bar@HOST)1>
 
-  If we try to dispatch to `Hello.world`, it won't be available
+  If we try to dispatch to `Hello.world/0`, it won't be available
   as it was defined only in the other shell:
 
       iex(bar@HOST)1> Hello.world()
@@ -302,15 +326,14 @@ defmodule IEx do
   ## The .iex.exs file
 
   When starting, IEx looks for a local `.iex.exs` file (located in the current
-  working directory), then a global one (located at `~/.iex.exs`) and loads the
-  first one it finds (if any). Note the location of the `.iex.exs` files, both
-  in the current directory and the global one, are taken relative to the user
-  that started the application, not to the user that is connecting to the node in
-  case of remote IEx connections.
+  working directory), then for a global `.iex.exs` file located inside the
+  directory pointed by the `IEX_HOME` environment variable (which defaults
+  to `~`) and loads the first one it finds (if any).
 
-  The code in the loaded `.iex.exs` file is evaluated in the shell's context.
-  For instance, any modules that are loaded or variables that are bound in the
-  `.iex.exs` file will be available in the shell after it has booted.
+  The code in the chosen `.iex.exs` file is evaluated line by line in the shell's
+  context, as if each line were being typed in the shell. For instance, any modules
+  that are loaded or variables that are bound in the `.iex.exs` file will be available
+  in the shell after it has booted.
 
   Take the following `.iex.exs` file:
 
@@ -337,8 +360,12 @@ defmodule IEx do
       iex(1)> value
       13
 
-  It is possible to load another file by supplying the `--dot-iex`
-  option to IEx. See `iex --help`.
+  It is possible to load another file by supplying the `--dot-iex` option
+  to IEx. See `iex --help`.
+
+  In case of remote nodes, the location of the `.iex.exs` files are taken
+  relative to the user that started the application, not to the user that
+  is connecting to the node in case of remote IEx connections.
 
   ## Configuring the shell
 
@@ -413,21 +440,18 @@ defmodule IEx do
 
       IEx.configure(colors: [syntax_colors: false])
 
-  You can also configure the syntax colors, however, as desired:
+  You can also configure the syntax colors, however, as desired.
+  The below will format atoms in red and remove the coloring for
+  all other data types:
 
       IEx.configure(colors: [syntax_colors: [atom: :red]])
 
-  Configuration for most built-in data types are supported: `:atom`,
-  `:string`, `:binary`, `:list`, `:number`, `:boolean`, `:nil`, and others.
-  The default is:
-
-      [number: :magenta, atom: :cyan, string: :green,
-       boolean: :magenta, nil: :magenta]
+  The default values can be found in `IO.ANSI.syntax_colors/0`.
 
   ## Inspect
 
   A keyword list containing inspect options used by the shell
-  when printing results of expression evaluation. Default to
+  when printing results of expression evaluation. Defaults to
   pretty formatting with a limit of 50 entries.
 
   To show all entries, configure the limit to `:infinity`:
@@ -498,18 +522,14 @@ defmodule IEx do
     IEx.Config.configuration()
   end
 
-  @doc """
-  Registers a function to be invoked after the IEx process is spawned.
-  """
-  @spec after_spawn(fun()) :: :ok
+  @doc false
+  @deprecated "The functionality is no longer supported"
   def after_spawn(fun) when is_function(fun) do
     IEx.Config.after_spawn(fun)
   end
 
-  @doc """
-  Returns registered `after_spawn` callbacks.
-  """
-  @spec after_spawn() :: [fun()]
+  @doc false
+  @deprecated "The functionality is no longer supported"
   def after_spawn do
     IEx.Config.after_spawn()
   end
@@ -559,7 +579,10 @@ defmodule IEx do
   @doc """
   Pries into the process environment.
 
-  This is useful for debugging a particular chunk of code
+  When you start `iex`, IEx will set this function to be the
+  default `dbg/2` backend unless the `--no-pry` flag is given.
+
+  This function is useful for debugging a particular chunk of code
   when executed by a particular process. The process becomes
   the evaluator of IEx commands and is temporarily changed to
   have a custom group leader. Those values are reverted by
@@ -568,14 +591,11 @@ defmodule IEx do
 
   When a process is pried, all code runs inside IEx and has
   access to all imports and aliases from the original code.
-  However, the code is evaluated and therefore cannot access
-  private functions of the module being pried. Module functions
-  still need to be accessed via `Mod.fun(args)`.
+  However, you cannot change the execution of the code nor
+  access private functions of the module being pried. Module
+  functions still need to be accessed via `Mod.fun(args)`.
 
-  Alternatively, you can use `IEx.break!/4` to setup a breakpoint
-  on a given module, function and arity you have no control of.
-  While `IEx.break!/4` is more flexible,  it does not contain
-  information about imports and aliases from the source code.
+  See also `break!/4` for others ways to pry.
 
   ## Examples
 
@@ -599,7 +619,7 @@ defmodule IEx do
   the shell will be reset and you gain access to all variables
   and the lexical scope from above:
 
-      pry(1)> map([a, b, c], &IO.inspect(&1))
+      iex(1)> map([a, b, c], &IO.inspect(&1))
       1
       2
       3
@@ -609,7 +629,7 @@ defmodule IEx do
   process can be freed by calling [`respawn/0`](`IEx.Helpers.respawn/0`), which starts a
   new IEx evaluation cycle, letting this one go:
 
-      pry(2)> respawn()
+      iex(2)> respawn()
       true
 
       Interactive Elixir - press Ctrl+C to exit (type h() ENTER for help)
@@ -643,8 +663,8 @@ defmodule IEx do
   the `iex` command and pass the `--trace` to `mix test` to avoid running
   into timeouts:
 
-      iex -S mix test --trace
-      iex -S mix test path/to/file:line --trace
+      $ iex -S mix test --trace
+      $ iex -S mix test path/to/file:line --trace
 
   """
   defmacro pry() do
@@ -712,8 +732,9 @@ defmodule IEx do
   the given number of `stops`.
 
   This function will instrument the given module and load a new
-  version in memory with breakpoints at the given function and
-  arity. If the module is recompiled, all breakpoints are lost.
+  version in memory with line by line breakpoints at the given
+  function and arity. If the module is recompiled, all breakpoints
+  are lost.
 
   When a breakpoint is reached, IEx will ask if you want to `pry`
   the given function and arity. In other words, this works similar
@@ -731,6 +752,8 @@ defmodule IEx do
     * `IEx.Helpers.break!/4` - sets up a breakpoint for the given module, function, arity
     * `IEx.Helpers.breaks/0` - prints all breakpoints and their IDs
     * `IEx.Helpers.continue/0` - continues until the next breakpoint in the same shell
+    * `IEx.Helpers.n/0` - goes to the next line of the current breakpoint
+    * `IEx.Helpers.next/0` - same as above
     * `IEx.Helpers.open/0` - opens editor on the current breakpoint
     * `IEx.Helpers.remove_breaks/0` - removes all breakpoints in all modules
     * `IEx.Helpers.remove_breaks/1` - removes all breakpoints in a given module
@@ -750,10 +773,11 @@ defmodule IEx do
   `IEx.Helpers.remove_breaks/1` and on all modules by calling
   `IEx.Helpers.remove_breaks/0`.
 
-  To exit a breakpoint, the developer can either invoke `continue()`,
-  which will block the shell until the next breakpoint is found or
-  the process terminates, or invoke `respawn()`, which starts a new IEx
-  shell, freeing up the pried one.
+  Within a breakpoint, you can call `n` to jump to the next line.
+  To exit a breakpoint, you can either invoke `continue`, which will
+  block the shell until the next breakpoint is found or the process
+  terminates, or invoke `respawn`, which starts a new IEx shell,
+  freeing up the pried one.
 
   ## Examples
 
@@ -761,23 +785,23 @@ defmodule IEx do
   a breakpoint directly from your IEx shell. But you can set up a break
   from anywhere by using the fully qualified name `IEx.break!`.
 
-  The following sets up a breakpoint on `URI.decode_query/2`:
+  The following sets up a breakpoint on `URI.parse/1`:
 
-      break! URI, :decode_query, 2
+      break! URI, :parse, 1
 
   This call will setup a breakpoint that stops once.
   To set a breakpoint that will stop 10 times:
 
-      break! URI, :decode_query, 2, 10
+      break! URI, :parse, 1, 10
 
   `IEx.break!/2` is a convenience macro that allows breakpoints
   to be given in the `Mod.fun/arity` format:
 
-      break! URI.decode_query/2
+      break! URI.parse/1
 
   Or to set a breakpoint that will stop 10 times:
 
-      break! URI.decode_query/2, 10
+      break! URI.parse/1, 10
 
   This function returns the breakpoint ID and will raise if there
   is an error setting up the breakpoint.
@@ -786,23 +810,22 @@ defmodule IEx do
 
   `IEx.break!/2` allows patterns to be given, triggering the
   breakpoint only in some occasions. For example, to trigger
-  the breakpoint only when the first argument is the "foo=bar"
-  string:
+  the breakpoint only when the first argument starts with the
+  "https" string:
 
-      break! URI.decode_query("foo=bar", _)
-
-  Or to trigger it whenever the second argument is a map with
-  more than one element:
-
-      break! URI.decode_query(_, map) when map_size(map) > 0
+      break! URI.parse("https" <> _, _)
 
   Only a single break point can be set per function. So if you call
   `IEx.break!` multiple times with different patterns, only the last
   pattern is kept.
 
-  Note that, while patterns may be given to macros, remember that
-  macros receive ASTs as arguments, and not values. For example, if
-  you try to break on a macro with the following pattern:
+  ## Macros
+
+  While it is possible to set breakpoint in macros, remember that macros
+  are generally expanded at compilation time, and therefore they may never
+  be invoked during runtime. Similarly, while patterns may be given to
+  macros, macros receive ASTs as arguments, and not values. For example,
+  if you try to break on a macro with the following pattern:
 
       break! MyModule.some_macro(pid) when pid == self()
 
@@ -817,8 +840,8 @@ defmodule IEx do
   the `iex` command and pass the `--trace` to `mix test` to avoid running
   into timeouts:
 
-      iex -S mix test --trace
-      iex -S mix test path/to/file:line --trace
+      $ iex -S mix test --trace
+      $ iex -S mix test path/to/file:line --trace
 
   """
   @doc since: "1.5.0"
@@ -832,47 +855,15 @@ defmodule IEx do
   @doc false
   def start(opts \\ [], mfa \\ {IEx, :dont_display_result, []}) do
     spawn(fn ->
-      case :init.notify_when_started(self()) do
-        :started -> :ok
-        _ -> :init.wait_until_started()
-      end
-
-      :ok = start_iex()
-      :ok = set_expand_fun()
-      :ok = run_after_spawn()
+      {:ok, _} = Application.ensure_all_started(:elixir)
+      System.wait_until_booted()
+      :ok = :io.setopts(binary: true, encoding: :unicode)
+      {:ok, _} = Application.ensure_all_started(:iex)
+      _ = for fun <- Enum.reverse(after_spawn()), do: fun.()
       IEx.Server.run_from_shell(opts, mfa)
     end)
   end
 
   @doc false
   def dont_display_result, do: :"do not show this result in output"
-
-  ## Helpers
-
-  defp start_iex() do
-    {:ok, _} = Application.ensure_all_started(:iex)
-    :ok
-  end
-
-  defp set_expand_fun do
-    gl = Process.group_leader()
-
-    expand_fun =
-      if node(gl) != node() do
-        IEx.Autocomplete.remsh(node())
-      else
-        &IEx.Autocomplete.expand/1
-      end
-
-    # expand_fun is not supported by a shell variant
-    # on Windows, so we do two IO calls, not caring
-    # about the result of the expand_fun one.
-    _ = :io.setopts(gl, expand_fun: expand_fun)
-    :io.setopts(gl, binary: true, encoding: :unicode)
-  end
-
-  defp run_after_spawn do
-    _ = for fun <- Enum.reverse(after_spawn()), do: fun.()
-    :ok
-  end
 end

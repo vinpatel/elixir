@@ -51,11 +51,19 @@ defmodule Application do
       config :my_app, :db_host, "db.local"
 
   See the "Configuration" section in the `Mix` module for more information.
-
   You can also change the application environment dynamically by using functions
   such as `put_env/3` and `delete_env/2`.
 
-  > Note: Each application is responsible for its own environment. Do not
+  > #### Environment in libraries {: .tip}
+  >
+  > The config files `config/config.exs` and `config/runtime.exs`
+  > are rarely used by libraries. Libraries typically define their environment
+  > in the `application/0` function of their `mix.exs`. Configuration files
+  > are rather used by applications to configure their libraries.
+
+  > #### Reading the environment of other applications {: .warning}
+  >
+  > Each application is responsible for its own environment. Do not
   > use the functions in this module for directly accessing or modifying
   > the environment of other applications. Whenever you change the application
   > environment, Elixir's build tool will only recompile the files that
@@ -63,7 +71,7 @@ defmodule Application do
   > of another application, there is a chance you will be depending on
   > outdated configuration, as your file won't be recompiled as it changes.
 
-  ### Compile-time environment
+  ## Compile-time environment
 
   In the previous example, we read the application environment at runtime:
 
@@ -81,37 +89,48 @@ defmodule Application do
   will only be read when `MyApp.DBClient` effectively starts. While reading
   the application environment at runtime is the preferred approach, in some
   rare occasions you may want to use the application environment to configure
-  the compilation of a certain project. This is often done by calling `get_env/3`
-  outside of a function:
+  the compilation of a certain project. However, if you try to access
+  `Application.fetch_env!/2` outside of a function:
 
       defmodule MyApp.DBClient do
-        @db_host Application.get_env(:my_app, :db_host, "db.local")
+        @db_host Application.fetch_env!(:my_app, :db_host)
 
         def start_link() do
           SomeLib.DBClient.start_link(host: @db_host)
         end
       end
 
-  This approach has one big limitation: if you change the value of the
-  application environment after the code is compiled, the value used at
-  runtime is not going to change! For example, if your `config/runtime.exs`
-  has:
+  You might see warnings and errors:
 
-      config :my_app, :db_host, "db.production"
+      warning: Application.fetch_env!/2 is discouraged in the module body,
+      use Application.compile_env/3 instead
+        iex:3: MyApp.DBClient
 
-  This value will have no effect as the code was compiled to connect to "db.local",
-  which is mostly likely unavailable in the production environment.
+      ** (ArgumentError) could not fetch application environment :db_host
+      for application :my_app because the application was not loaded nor
+      configured
 
-  For those reasons, reading the application environment at runtime should be the
-  first choice. However, if you really have to read the application environment
-  during compilation, we recommend you to use `compile_env/3` instead:
+  This happens because, when defining modules, the application environment
+  is not yet available. Luckily, the warning tells us how to solve this
+  issue, by using `Application.compile_env/3` instead:
 
-      require Application
-      @db_host Application.compile_env(:my_app, :db_host, "db.local")
+      defmodule MyApp.DBClient do
+        @db_host Application.compile_env(:my_app, :db_host, "db.local")
 
-  By using `compile_env/3`, tools like Mix will store the values used during
-  compilation and compare the compilation values with the runtime values whenever
-  your system starts, raising an error in case they differ.
+        def start_link() do
+          SomeLib.DBClient.start_link(host: @db_host)
+        end
+      end
+
+  The difference here is that `compile_env` expects the default value to be
+  given as an argument, instead of using the `def application` function of
+  your `mix.exs`. Furthermore, by using `compile_env/3`, tools like Mix will
+  store the values used during compilation and compare the compilation values
+  with the runtime values whenever your system starts, raising an error in
+  case they differ.
+
+  In any case, compile-time environments should be avoided. Whenever possible,
+  reading the application environment at runtime should be the first choice.
 
   ## The application callback module
 
@@ -517,24 +536,27 @@ defmodule Application do
       raise "Application.compile_env/3 cannot be called inside functions, only in the module body"
     end
 
-    key_or_path = expand_key_or_path(key_or_path, __CALLER__)
+    key_or_path = Macro.expand_literals(key_or_path, %{__CALLER__ | function: {:__info__, 1}})
 
     quote do
-      Application.__compile_env__(unquote(app), unquote(key_or_path), unquote(default), __ENV__)
+      Application.compile_env(__ENV__, unquote(app), unquote(key_or_path), unquote(default))
     end
   end
 
-  defp expand_key_or_path({:__aliases__, _, _} = alias, env),
-    do: Macro.expand(alias, %{env | function: {:__info__, 1}})
+  @doc """
+  Reads the application environment at compilation time from a macro.
 
-  defp expand_key_or_path(list, env) when is_list(list),
-    do: Enum.map(list, &expand_key_or_path(&1, env))
+  Typically, developers will use `compile_env/3`. This function must
+  only be invoked from macros which aim to read the compilation environment
+  dynamically.
 
-  defp expand_key_or_path(other, _env),
-    do: other
-
-  @doc false
-  def __compile_env__(app, key_or_path, default, env) do
+  It expects a `Macro.Env` as first argument, where the `Macro.Env` is
+  typically the `__CALLER__` in a macro. It raises if `Macro.Env` comes
+  from a function.
+  """
+  @doc since: "1.14.0"
+  @spec compile_env(Macro.Env.t(), app, key | list, value) :: value
+  def compile_env(%Macro.Env{} = env, app, key_or_path, default) do
     case fetch_compile_env(app, key_or_path, env) do
       {:ok, value} -> value
       :error -> default
@@ -554,15 +576,28 @@ defmodule Application do
       raise "Application.compile_env!/2 cannot be called inside functions, only in the module body"
     end
 
-    key_or_path = expand_key_or_path(key_or_path, __CALLER__)
+    key_or_path = Macro.expand_literals(key_or_path, %{__CALLER__ | function: {:__info__, 1}})
 
     quote do
-      Application.__compile_env__!(unquote(app), unquote(key_or_path), __ENV__)
+      Application.compile_env!(__ENV__, unquote(app), unquote(key_or_path))
     end
   end
 
-  @doc false
-  def __compile_env__!(app, key_or_path, env) do
+  @doc """
+  Reads the application environment at compilation time from a macro
+  or raises.
+
+  Typically, developers will use `compile_env!/2`. This function must
+  only be invoked from macros which aim to read the compilation environment
+  dynamically.
+
+  It expects a `Macro.Env` as first argument, where the `Macro.Env` is
+  typically the `__CALLER__` in a macro. It raises if `Macro.Env` comes
+  from a function.
+  """
+  @doc since: "1.14.0"
+  @spec compile_env!(Macro.Env.t(), app, key | list) :: value
+  def compile_env!(%Macro.Env{} = env, app, key_or_path) do
     case fetch_compile_env(app, key_or_path, env) do
       {:ok, value} ->
         value
@@ -574,8 +609,9 @@ defmodule Application do
     end
   end
 
-  defp fetch_compile_env(app, key, env) when is_atom(key),
-    do: fetch_compile_env(app, key, [], env)
+  defp fetch_compile_env(app, key, env) when is_atom(key) do
+    fetch_compile_env(app, key, [], env)
+  end
 
   defp fetch_compile_env(app, [key | paths], env) when is_atom(key),
     do: fetch_compile_env(app, key, paths, env)
@@ -600,10 +636,14 @@ defmodule Application do
   If the configuration parameter does not exist, the function returns the
   `default` value.
 
-  > **Important:** you must use this function to read only your own application
+  > #### Warning {: .warning}
+  >
+  > You must use this function to read only your own application
   > environment. Do not read the environment of other applications.
 
-  > **Important:** if you are writing a library to be used by other developers,
+  > #### Application environment in libraries {: .info}
+  >
+  > If you are writing a library to be used by other developers,
   > it is generally recommended to avoid the application environment, as the
   > application environment is effectively a global storage. For more information,
   > read our [library guidelines](library-guidelines.md).
@@ -657,10 +697,14 @@ defmodule Application do
 
   If the configuration parameter does not exist, the function returns `:error`.
 
-  > **Important:** you must use this function to read only your own application
+  > #### Warning {: .warning}
+  >
+  > You must use this function to read only your own application
   > environment. Do not read the environment of other applications.
 
-  > **Important:** if you are writing a library to be used by other developers,
+  > #### Application environment in info
+  >
+  > If you are writing a library to be used by other developers,
   > it is generally recommended to avoid the application environment, as the
   > application environment is effectively a global storage. For more information,
   > read our [library guidelines](library-guidelines.md).
@@ -680,10 +724,14 @@ defmodule Application do
 
   If the configuration parameter does not exist, raises `ArgumentError`.
 
-  > **Important:** you must use this function to read only your own application
+  > #### Warning {: .warning}
+  >
+  > You must use this function to read only your own application
   > environment. Do not read the environment of other applications.
 
-  > **Important:** if you are writing a library to be used by other developers,
+  > #### Application environment in info
+  >
+  > If you are writing a library to be used by other developers,
   > it is generally recommended to avoid the application environment, as the
   > application environment is effectively a global storage. For more information,
   > read our [library guidelines](library-guidelines.md).
@@ -792,7 +840,7 @@ defmodule Application do
   @doc """
   Ensures the given `app` is loaded.
 
-  Same as `load/2` but returns `:ok` if the application was already
+  Same as `load/1` but returns `:ok` if the application was already
   loaded.
   """
   @doc since: "1.10.0"
@@ -1043,7 +1091,7 @@ defmodule Application do
     "bad application start specs: #{inspect(spec)}"
   end
 
-  defp do_format_error({'no such file or directory', file}) do
+  defp do_format_error({~c"no such file or directory", file}) do
     "could not find application file: #{file}"
   end
 

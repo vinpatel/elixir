@@ -342,13 +342,14 @@ defmodule Mix.Tasks.Compile.App do
   defp handle_extra_applications(properties, config) do
     {extra, properties} = Keyword.pop(properties, :extra_applications, [])
 
-    {required, _optional} =
+    {all, optional} =
       project_apps(properties, config, extra, fn ->
         apps_from_runtime_prod_deps(properties, config)
       end)
 
-    # TODO: Also store optional applications once support lands in Erlang/OTP 24+
-    Keyword.put(properties, :applications, required)
+    properties
+    |> Keyword.put(:applications, all)
+    |> Keyword.put(:optional_applications, optional)
   end
 
   defp apps_from_runtime_prod_deps(properties, config) do
@@ -391,35 +392,24 @@ defmodule Mix.Tasks.Compile.App do
   ## Helpers for loading and manipulating apps
 
   @doc false
-  # Entry point function used by app tracer, app loader, etc.
-  def project_apps(config) do
-    project = Mix.Project.get!()
-
-    properties =
-      if function_exported?(project, :application, 0), do: project.application(), else: []
-
-    extra =
-      Keyword.get(properties, :included_applications, []) ++
-        Keyword.get(properties, :extra_applications, [])
-
-    project_apps(properties, config, extra, fn ->
-      config |> deps_opts() |> Keyword.keys()
-    end)
-  end
-
-  defp project_apps(properties, config, extra, deps_loader) do
+  def project_apps(properties, config, extra, deps_loader) do
     apps = Keyword.get(properties, :applications) || deps_loader.()
-    {required, optional} = split_by_type(extra ++ apps)
-    required = Enum.uniq(language_apps(config) ++ Enum.reverse(required))
+    {all, required, optional} = split_by_type(extra ++ apps)
+    all = Enum.uniq(language_apps(config) ++ Enum.reverse(all))
     optional = Enum.uniq(Enum.reverse(optional -- required))
-    {required, optional}
+    {all, optional}
   end
 
   defp split_by_type(apps) do
-    Enum.reduce(apps, {[], []}, fn
-      app, {required, optional} when is_atom(app) -> {[app | required], optional}
-      {app, :required}, {required, optional} -> {[app | required], optional}
-      {app, :optional}, {required, optional} -> {required, [app | optional]}
+    Enum.reduce(apps, {[], [], []}, fn
+      app, {all, required, optional} when is_atom(app) ->
+        {[app | all], [app | required], optional}
+
+      {app, :required}, {all, required, optional} ->
+        {[app | all], [app | required], optional}
+
+      {app, :optional}, {all, required, optional} ->
+        {[app | all], required, [app | optional]}
     end)
   end
 

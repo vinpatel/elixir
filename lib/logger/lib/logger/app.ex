@@ -2,40 +2,60 @@ defmodule Logger.App do
   @moduledoc false
 
   require Logger
-
   use Application
 
   @doc false
   def start(_type, _args) do
-    start_options = Application.get_env(:logger, :start_options)
     otp_reports? = Application.fetch_env!(:logger, :handle_otp_reports)
-    counter = :counters.new(1, [:atomics])
+    sasl_reports? = Application.fetch_env!(:logger, :handle_sasl_reports)
+    translators = Application.fetch_env!(:logger, :translators)
 
-    children = [
-      %{
-        id: :gen_event,
-        start: {:gen_event, :start_link, [{:local, Logger}, start_options]},
-        modules: :dynamic
-      },
-      {Logger.Watcher, {Logger.Config, counter}},
-      Logger.BackendSupervisor
-    ]
+    {backends, console?} =
+      case Application.fetch_env(:logger, :backends) do
+        {:ok, backends} -> {List.delete(backends, :console), :console in backends}
+        :error -> {[], true}
+      end
 
-    case Supervisor.start_link(children, strategy: :rest_for_one, name: Logger.Supervisor) do
+    # TODO: Warn if :backends is set on Elixir v1.19
+    # TODO: Warn if :console is set on Elixir v1.19
+    default_handler =
+      if console = Application.get_env(:logger, :console) do
+        {handler, formatter} = Keyword.split(console, [:level])
+
+        with :error <- Application.fetch_env(:logger, :default_formatter) do
+          Application.put_env(:logger, :default_formatter, formatter)
+        end
+
+        handler
+      else
+        []
+      end
+
+    primary_config = :logger.get_primary_config()
+    :ok = :logger.set_primary_config(:level, default_level())
+
+    # If there is additional metadata in the :logger config, we merge it into
+    # the primary :logger metadata.
+    with [_ | _] = metadata <- Application.fetch_env!(:logger, :metadata) do
+      :ok = :logger.set_primary_config(:metadata, Enum.into(metadata, primary_config.metadata))
+    end
+
+    process_level_filter = {&Logger.Utils.process_level/2, []}
+    :ok = :logger.add_primary_filter(:logger_process_level, process_level_filter)
+
+    translator_config = %{translators: translators, otp: otp_reports?, sasl: sasl_reports?}
+    translator_filter = {&Logger.Utils.translator/2, translator_config}
+    :ok = :logger.add_primary_filter(:logger_translator, translator_filter)
+
+    revert = [{:set_primary_config, [primary_config]} | remove_erlang_handler()]
+    children = if backends != [], do: [Logger.Backends.Internal], else: []
+
+    case Supervisor.start_link(children, strategy: :one_for_one, name: Logger.Supervisor) do
       {:ok, sup} ->
-        primary_config = add_elixir_handler(otp_reports?, counter)
-
-        default_handlers =
-          if otp_reports? do
-            delete_erlang_handler()
-          else
-            []
-          end
-
-        handlers = [{:primary, primary_config} | default_handlers]
-        {:ok, sup, handlers}
+        {:ok, sup, [add_elixir_handler(console? && default_handler) | revert]}
 
       {:error, _} = error ->
+        redo(revert)
         error
     end
   end
@@ -46,14 +66,17 @@ defmodule Logger.App do
   end
 
   @doc false
-  def stop(handlers) do
+  def stop(revert) do
+    # TODO: Remove this line and all of Logger.Backends.* on Elixir v2.0+
     _ = :logger.remove_handler(Logger)
-    _ = :logger.remove_primary_filter(:process_disabled)
-    add_handlers(handlers)
+    _ = :logger.remove_primary_filter(:logger_process_level)
+    _ = :logger.remove_primary_filter(:logger_translator)
+
+    redo(revert)
 
     :logger.add_primary_filter(
       :silence_logger_exit,
-      {&Logger.Filter.silence_logger_exit/2, []}
+      {&Logger.Utils.silence_logger_exit/2, []}
     )
   end
 
@@ -71,76 +94,53 @@ defmodule Logger.App do
     Application.stop(:logger)
   end
 
-  defp add_elixir_handler(otp_reports?, counter) do
-    config = %{
-      level: :all,
-      config: %{counter: counter},
-      filter_default: :log,
-      filters:
-        if not otp_reports? do
-          [filter_elixir_domain: {&Logger.Filter.filter_elixir_domain/2, []}]
-        else
-          []
-        end
-    }
+  ## Helpers
 
-    %{level: erl_level} = primary_config = :logger.get_primary_config()
+  defp default_level() do
+    case Application.get_env(:logger, :level, :debug) do
+      :warn ->
+        IO.warn(":logger has be set to :warn in config files, please use :warning instead")
+        :warning
 
-    # Elixir's logger level is no longer set by default.
-    #
-    # If it is set, it always has higher precedence, but we warn
-    # in case of mismatches.
-    #
-    # If it is not set, we revert Erlang's kernel to debug, if it
-    # has its default value, otherwise, we keep it as is.
-    case Application.fetch_env(:logger, :level) do
-      {:ok, app_level} ->
-        level = Logger.Handler.elixir_level_to_erlang_level(app_level)
-
-        if erl_level != :notice and erl_level != level do
-          IO.warn(
-            "the level for Erlang's logger was set to #{inspect(erl_level)}, " <>
-              "but Elixir's logger was set to #{inspect(app_level)}. " <>
-              "Elixir's logger value will take higher precedence"
-          )
-        end
-
-        :ok = :logger.set_primary_config(:level, level)
-
-      :error when erl_level == :notice ->
-        :ok = :logger.set_primary_config(:level, :debug)
-
-      :error ->
-        :ok
+      level ->
+        level
     end
-
-    :ok = :logger.add_primary_filter(:process_disabled, {&Logger.Filter.process_disabled/2, []})
-    :ok = :logger.add_handler(Logger, Logger.Handler, config)
-    primary_config
   end
 
-  defp delete_erlang_handler() do
+  defp remove_erlang_handler() do
     with {:ok, %{module: module} = config} <- :logger.get_handler_config(:default),
          :ok <- :logger.remove_handler(:default) do
-      handler_config = {:default, module, config}
-
-      [handler_config]
+      [{:add_handler, [:default, module, config]}]
     else
       _ -> []
     end
   end
 
-  defp add_handlers(handlers) do
-    for handler <- handlers do
-      case handler do
-        {handler, module, config} ->
-          :logger.add_handler(handler, module, config)
+  defp add_elixir_handler(default_handler) do
+    if handler = Application.get_env(:logger, :default_handler, default_handler) do
+      config =
+        handler
+        |> Keyword.put_new(:filters, remote_gl: {&:logger_filters.remote_gl/2, :stop})
+        |> Keyword.put_new(:filter_default, :log)
+        |> Keyword.put_new(:module, :logger_std_h)
+        |> Keyword.put_new_lazy(:formatter, &Logger.default_formatter/0)
+        |> Map.new()
 
-        {:primary, config} ->
-          :logger.set_primary_config(config)
+      case :logger.add_handler(:default, config.module, config) do
+        :ok ->
+          [{:remove_handler, [:default]}]
+
+        {:error, error} ->
+          IO.puts(:stderr, "Could not attach default Logger handler: #{inspect(error)}")
       end
+    else
+      []
     end
+  end
 
-    :ok
+  defp redo(handlers) do
+    for {fun, args} <- handlers do
+      apply(:logger, fun, args)
+    end
   end
 end

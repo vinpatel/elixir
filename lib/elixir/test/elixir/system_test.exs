@@ -43,20 +43,20 @@ defmodule SystemTest do
   end
 
   test "argv/0" do
-    list = elixir('-e "IO.inspect System.argv()" -- -o opt arg1 arg2 --long-opt 10')
+    list = elixir(~c"-e \"IO.inspect System.argv()\" -- -o opt arg1 arg2 --long-opt 10")
     {args, _} = Code.eval_string(list, [])
     assert args == ["-o", "opt", "arg1", "arg2", "--long-opt", "10"]
   end
 
   @test_var "SYSTEM_ELIXIR_ENV_TEST_VAR"
 
-  test "*_env/*" do
+  test "get_env/put_env/delete_env" do
     assert System.get_env(@test_var) == nil
     assert System.get_env(@test_var, "SAMPLE") == "SAMPLE"
     assert System.fetch_env(@test_var) == :error
 
     message = "could not fetch environment variable #{inspect(@test_var)} because it is not set"
-    assert_raise ArgumentError, message, fn -> System.fetch_env!(@test_var) end
+    assert_raise System.EnvError, message, fn -> System.fetch_env!(@test_var) end
 
     System.put_env(@test_var, "SAMPLE")
 
@@ -68,12 +68,20 @@ defmodule SystemTest do
     System.delete_env(@test_var)
     assert System.get_env(@test_var) == nil
 
-    System.put_env(%{@test_var => "OTHER_SAMPLE"})
-    assert System.get_env(@test_var) == "OTHER_SAMPLE"
-
     assert_raise ArgumentError, ~r[cannot execute System.put_env/2 for key with \"=\"], fn ->
       System.put_env("FOO=BAR", "BAZ")
     end
+  end
+
+  test "put_env/2" do
+    System.put_env(%{@test_var => "MAP_STRING"})
+    assert System.get_env(@test_var) == "MAP_STRING"
+
+    System.put_env([{String.to_atom(@test_var), "KW_ATOM"}])
+    assert System.get_env(@test_var) == "KW_ATOM"
+
+    System.put_env([{String.to_atom(@test_var), nil}])
+    assert System.get_env(@test_var) == nil
   end
 
   test "cmd/2 raises for null bytes" do
@@ -84,7 +92,7 @@ defmodule SystemTest do
 
   test "cmd/3 raises with non-binary arguments" do
     assert_raise ArgumentError, ~r"all arguments for System.cmd/3 must be binaries", fn ->
-      System.cmd("ls", ['/usr'])
+      System.cmd("ls", [~c"/usr"])
     end
   end
 
@@ -113,7 +121,7 @@ defmodule SystemTest do
     test "cmd/3 with absolute and relative paths", config do
       echo = Path.join(config.tmp_dir, @echo)
       File.mkdir_p!(Path.dirname(echo))
-      File.cp!(System.find_executable("cmd"), echo)
+      File.ln_s!(System.find_executable("cmd"), echo)
 
       File.cd!(Path.dirname(echo), fn ->
         # There is a bug in OTP where find_executable is finding
@@ -165,12 +173,20 @@ defmodule SystemTest do
       assert {["hello\n"], 0} = System.cmd("echo", ["hello"], opts)
     end
 
+    test "cmd/3 by line" do
+      assert {["hello", "world"], 0} =
+               System.cmd("echo", ["hello\nworld"], into: [], lines: 1024)
+
+      assert {["hello", "world"], 0} =
+               System.cmd("echo", ["-n", "hello\nworld"], into: [], lines: 3)
+    end
+
     @echo "echo-elixir-test"
     @tag :tmp_dir
     test "cmd/3 with absolute and relative paths", config do
       echo = Path.join(config.tmp_dir, @echo)
       File.mkdir_p!(Path.dirname(echo))
-      File.cp!(System.find_executable("echo"), echo)
+      File.ln_s!(System.find_executable("echo"), echo)
 
       File.cd!(Path.dirname(echo), fn ->
         # There is a bug in OTP where find_executable is finding
@@ -187,6 +203,19 @@ defmodule SystemTest do
 
     test "shell/1" do
       assert {"hello\n", 0} = System.shell("echo hello")
+    end
+
+    test "shell/1 with interpolation" do
+      assert {"1\n2\n", 0} = System.shell("x=1; echo $x; echo '2'")
+    end
+
+    @tag timeout: 1_000
+    test "shell/1 returns when command awaits input" do
+      assert {"", 0} = System.shell("cat", close_stdin: true)
+    end
+
+    test "shell/1 with comment" do
+      assert {"1\n", 0} = System.shell("echo '1' # comment")
     end
 
     test "shell/2 (with options)" do

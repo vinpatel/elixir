@@ -89,15 +89,15 @@ defmodule Mix.Tasks.Deps do
     * `:override` - if set to `true` the dependency will override any other
       definitions of itself by other dependencies
 
-    * `:manager` - Mix can also compile Rebar, Rebar3 and makefile projects
-      and can fetch sub dependencies of Rebar and Rebar3 projects. Mix will
+    * `:manager` - Mix can also compile Rebar3 and makefile projects
+      and can fetch sub dependencies of Rebar3 projects. Mix will
       try to infer the type of project but it can be overridden with this
-      option by setting it to `:mix`, `:rebar3`, `:rebar` or `:make`. In case
+      option by setting it to `:mix`, `:rebar3`, or `:make`. In case
       there are conflicting definitions, the first manager in the list above
       will be picked up. For example, if a dependency is found with `:rebar3`
-      and `:rebar` managers in different part of the trees, `:rebar3` will
-      be automatically picked. You can find the manager by running `mix deps`
-      and override it by setting the `:override` option in a top-level project.
+      as a manager in different part of the trees, `:rebar3` will be automatically
+      picked. You can find the manager by running `mix deps` and override it by
+      setting the `:override` option in a top-level project.
 
     * `:runtime` - whether the dependency is part of runtime applications.
       If the `:applications` key is not provided in `def application` in your
@@ -125,7 +125,7 @@ defmodule Mix.Tasks.Deps do
   HTTP authentication via URLs, it can be achieved via Git configuration, keeping
   the access rules outside of source control.
 
-      git config --global url."https://YOUR_USER:YOUR_PASS@example.com/".insteadOf "https://example.com/"
+      $ git config --global url."https://YOUR_USER:YOUR_PASS@example.com/".insteadOf "https://example.com/"
 
   For more information, see the `git config` documentation:
   https://git-scm.com/docs/git-config#git-config-urlltbasegtinsteadOf

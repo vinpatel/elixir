@@ -15,6 +15,7 @@ defmodule Mix.Compilers.Test do
   @compile {:no_warn_undefined, ExUnit}
   @stale_manifest "compile.test_stale"
   @manifest_vsn 1
+  @rand_algorithm :exs1024
 
   @doc """
   Requires and runs test files.
@@ -22,7 +23,18 @@ defmodule Mix.Compilers.Test do
   It expects all of the test patterns, the test files that were matched for the
   test patterns, the test paths, and the opts from the test task.
   """
-  def require_and_run(matched_test_files, test_paths, opts) do
+  def require_and_run(matched_test_files, test_paths, elixirc_opts, opts) do
+    elixirc_opts = Keyword.merge([docs: false, debug_info: false], elixirc_opts)
+    previous_opts = Code.compiler_options(elixirc_opts)
+
+    try do
+      require_and_run(matched_test_files, test_paths, opts)
+    after
+      Code.compiler_options(previous_opts)
+    end
+  end
+
+  defp require_and_run(matched_test_files, test_paths, opts) do
     stale = opts[:stale]
 
     {test_files, stale_manifest_pid, parallel_require_callbacks} =
@@ -32,9 +44,20 @@ defmodule Mix.Compilers.Test do
         {matched_test_files, nil, []}
       end
 
+    Application.ensure_all_started(:ex_unit)
+
     cond do
       test_files == [] ->
-        :noop
+        # Make sure we run the after_suite callbacks but with no feedback
+        formatters = Application.fetch_env!(:ex_unit, :formatters)
+
+        try do
+          Application.put_env(:ex_unit, :formatters, [])
+          _ = ExUnit.run()
+          :noop
+        after
+          Application.put_env(:ex_unit, :formatters, formatters)
+        end
 
       Keyword.get(opts, :profile_require) == "time" ->
         Kernel.ParallelCompiler.require(test_files, profile: :time)
@@ -43,6 +66,8 @@ defmodule Mix.Compilers.Test do
       true ->
         task = ExUnit.async_run()
         warnings_as_errors? = Keyword.get(opts, :warnings_as_errors, false)
+        seed = Application.fetch_env!(:ex_unit, :seed)
+        test_files = shuffle(seed, test_files)
 
         try do
           failed? =
@@ -292,5 +317,14 @@ defmodule Mix.Compilers.Test do
 
   defp get_external_resources(module, cwd) do
     for file <- Module.get_attribute(module, :external_resource), do: Path.relative_to(file, cwd)
+  end
+
+  defp shuffle(_seed = 0, list) do
+    list
+  end
+
+  defp shuffle(seed, list) do
+    _ = :rand.seed(@rand_algorithm, {seed, seed, seed})
+    Enum.shuffle(list)
   end
 end

@@ -150,7 +150,7 @@ defmodule IO do
     with :eof <- read(device, :eof) do
       with [_ | _] = opts <- :io.getopts(device),
            false <- Keyword.get(opts, :binary, true) do
-        ''
+        ~c""
       else
         _ -> ""
       end
@@ -158,22 +158,31 @@ defmodule IO do
   end
 
   def read(device, :eof) do
-    getn(device, '', :eof)
+    getn(device, ~c"", :eof)
   end
 
   def read(device, :line) do
-    :io.get_line(map_dev(device), '')
+    :io.get_line(map_dev(device), ~c"")
   end
 
   def read(device, count) when is_integer(count) and count >= 0 do
-    :io.get_chars(map_dev(device), '', count)
+    :io.get_chars(map_dev(device), ~c"", count)
   end
 
   @doc """
   Reads from the IO `device`. The operation is Unicode unsafe.
 
-  The `device` is iterated by the given number of bytes, line by line if
-  `:line` is given, or until `:eof`.
+  The `device` is iterated as specified by the `line_or_chars` argument:
+
+    * if `line_or_chars` is an integer, it represents a number of bytes. The device is
+      iterated by that number of bytes.
+
+    * if `line_or_chars` is `:line`, the device is iterated line by line.
+
+    * if `line_or_chars` is `:eof`, the device is iterated until `:eof`. `line_or_chars`
+      can only be `:eof` since Elixir 1.13.0. `:eof` replaces the deprecated `:all`,
+      with the difference that `:all` returns `""` on end of file, while `:eof` returns
+      `:eof` itself.
 
   It returns:
 
@@ -286,13 +295,23 @@ defmodule IO do
   end
 
   @doc """
-  Writes a `message` to stderr, along with the given `stacktrace`.
+  Writes a `message` to stderr, along with the given `stacktrace_info`.
+
+  The `stacktrace_info` must be one of:
+
+    * a `__STACKTRACE__`, where all entries in the stacktrace will be
+      included in the error message
+
+    * a `Macro.Env` structure (since v1.14.0), where a single stacktrace
+      entry from the compilation environment will be used
+
+    * a keyword list with at least the `:file` option representing
+      a single stacktrace entry (since v1.14.0). The `:line`, `:module`,
+      `:function` options are also supported
 
   This function also notifies the compiler a warning was printed
   (in case --warnings-as-errors was enabled). It returns `:ok`
   if it succeeds.
-
-  An empty list can be passed to avoid stacktrace printing.
 
   ## Examples
 
@@ -302,10 +321,34 @@ defmodule IO do
       #=>   my_app.ex:4: MyApp.main/1
 
   """
-  @spec warn(chardata | String.Chars.t(), Exception.stacktrace()) :: :ok
+  @spec warn(chardata | String.Chars.t(), Exception.stacktrace() | keyword() | Macro.Env.t()) ::
+          :ok
+  def warn(message, stacktrace_info)
+
   def warn(message, []) do
     message = [to_chardata(message), ?\n]
-    :elixir_errors.log_and_print_warning(0, nil, message, message)
+    :elixir_errors.print_warning(0, nil, message, message)
+  end
+
+  def warn(message, %Macro.Env{} = env) do
+    warn(message, Macro.Env.stacktrace(env))
+  end
+
+  def warn(message, [{_, _} | _] = keyword) do
+    if file = keyword[:file] do
+      warn(
+        message,
+        %{
+          __ENV__
+          | module: keyword[:module],
+            function: keyword[:function],
+            line: keyword[:line],
+            file: file
+        }
+      )
+    else
+      warn(message, [])
+    end
   end
 
   def warn(message, [{_, _, _, opts} | _] = stacktrace) do
@@ -314,7 +357,7 @@ defmodule IO do
     line = opts[:line]
     file = opts[:file]
 
-    :elixir_errors.log_and_print_warning(
+    :elixir_errors.print_warning(
       line || 0,
       file && List.to_string(file),
       message,
@@ -482,7 +525,7 @@ defmodule IO do
 
   defp getn_eof(device, prompt, acc) do
     case :io.get_line(device, prompt) do
-      line when is_binary(line) or is_list(line) -> getn_eof(device, '', [line | acc])
+      line when is_binary(line) or is_list(line) -> getn_eof(device, ~c"", [line | acc])
       :eof -> wrap_eof(:lists.reverse(acc))
       other -> other
     end
@@ -545,7 +588,7 @@ defmodule IO do
   Note that an IO stream has side effects and every time
   you go over the stream you may get different results.
 
-  `stream/1` has been introduced in Elixir v1.12.0,
+  `stream/0` has been introduced in Elixir v1.12.0,
   while `stream/2` has been available since v1.0.0.
 
   ## Examples
@@ -554,6 +597,14 @@ defmodule IO do
   from the command line:
 
       Enum.each(IO.stream(:stdio, :line), &IO.write(&1))
+
+  Another example where you might want to collect a user input
+  every new line and break on an empty line, followed by removing
+  redundant new line characters (`"\n"`):
+
+      IO.stream(:stdio, :line)
+      |> Enum.take_while(&(&1 != "\n"))
+      |> Enum.map(&String.replace(&1, "\n", ""))
 
   """
   @spec stream(device, :line | pos_integer) :: Enumerable.t()
@@ -590,7 +641,7 @@ defmodule IO do
   Finally, do not use this function on IO devices in Unicode
   mode as it will return the wrong result.
 
-  `binstream/1` has been introduced in Elixir v1.12.0,
+  `binstream/0` has been introduced in Elixir v1.12.0,
   while `binstream/2` has been available since v1.0.0.
   """
   @spec binstream(device, :line | pos_integer) :: Enumerable.t()

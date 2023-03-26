@@ -70,12 +70,20 @@ defmodule Code.Normalizer do
   # Atoms with interpolations
   defp do_normalize(
          {{:., dot_meta, [:erlang, :binary_to_atom]}, call_meta,
-          [{:<<>>, _, args} = string, :utf8]},
+          [{:<<>>, _, parts} = string, :utf8]},
          state
        )
-       when is_list(args) do
+       when is_list(parts) do
     dot_meta = patch_meta_line(dot_meta, state.parent_meta)
     call_meta = patch_meta_line(call_meta, dot_meta)
+
+    utf8 =
+      if parts == [] or binary_interpolated?(parts) do
+        # a non-normalized :utf8 atom signals an atom interpolation
+        :utf8
+      else
+        normalize_literal(:utf8, [], state)
+      end
 
     string =
       if state.escape do
@@ -84,27 +92,31 @@ defmodule Code.Normalizer do
         normalize_bitstring(string, state)
       end
 
-    {{:., dot_meta, [:erlang, :binary_to_atom]}, call_meta, [string, :utf8]}
+    {{:., dot_meta, [:erlang, :binary_to_atom]}, call_meta, [string, utf8]}
   end
 
   # Charlists with interpolations
-  defp do_normalize({{:., dot_meta, [List, :to_charlist]}, call_meta, [parts]}, state) do
-    parts =
-      Enum.map(parts, fn
-        {{:., part_dot_meta, [Kernel, :to_string]}, part_call_meta, args} ->
-          args = normalize_args(args, state)
+  defp do_normalize({{:., dot_meta, [List, :to_charlist]}, call_meta, [parts]} = quoted, state) do
+    if list_interpolated?(parts) do
+      parts =
+        Enum.map(parts, fn
+          {{:., part_dot_meta, [Kernel, :to_string]}, part_call_meta, args} ->
+            args = normalize_args(args, state)
 
-          {{:., part_dot_meta, [Kernel, :to_string]}, part_call_meta, args}
+            {{:., part_dot_meta, [Kernel, :to_string]}, part_call_meta, args}
 
-        part ->
-          if state.escape do
-            maybe_escape_literal(part, state)
-          else
-            part
-          end
-      end)
+          part when is_binary(part) ->
+            if state.escape do
+              maybe_escape_literal(part, state)
+            else
+              part
+            end
+        end)
 
-    {{:., dot_meta, [List, :to_charlist]}, call_meta, [parts]}
+      {{:., dot_meta, [List, :to_charlist]}, call_meta, [parts]}
+    else
+      normalize_call(quoted, state)
+    end
   end
 
   # Don't normalize the `Access` atom in access syntax
@@ -201,7 +213,7 @@ defmodule Code.Normalizer do
   defp do_normalize({:@, meta, [{name, name_meta, [value]}]}, state) do
     value =
       cond do
-        keyword?(value) ->
+        keyword?(value) and value != [] ->
           normalize_kw_args(value, state, true)
 
         is_list(value) ->
@@ -350,7 +362,7 @@ defmodule Code.Normalizer do
         normalize_kw_blocks(form, meta, args, state)
 
       allow_keyword?(form, arity) ->
-        args = normalize_args(args, %{state | parent_meta: state.parent_meta})
+        args = normalize_args(args, %{state | parent_meta: meta})
         {last_arg, leading_args} = List.pop_at(args, -1, [])
 
         last_args =
@@ -372,7 +384,7 @@ defmodule Code.Normalizer do
         {form, meta, leading_args ++ last_args}
 
       true ->
-        args = normalize_args(args, %{state | parent_meta: state.parent_meta})
+        args = normalize_args(args, %{state | parent_meta: meta})
         {form, meta, args}
     end
   end
@@ -381,11 +393,11 @@ defmodule Code.Normalizer do
   defp allow_keyword?(:{}, _), do: false
   defp allow_keyword?(op, arity), do: not is_atom(op) or not Macro.operator?(op, arity)
 
-  defp normalize_bitstring({:<<>>, meta, parts} = quoted, state, escape_interpolation \\ false) do
+  defp normalize_bitstring({:<<>>, meta, parts}, state, escape_interpolation \\ false) do
     meta = patch_meta_line(meta, state.parent_meta)
 
     parts =
-      if interpolated?(quoted) do
+      if binary_interpolated?(parts) do
         normalize_interpolation_parts(parts, %{state | parent_meta: meta}, escape_interpolation)
       else
         state = %{state | parent_meta: meta}
@@ -535,8 +547,7 @@ defmodule Code.Normalizer do
     term
   end
 
-  # Check if we have an interpolated string.
-  defp interpolated?({:<<>>, _, [_ | _] = parts}) do
+  defp binary_interpolated?(parts) do
     Enum.all?(parts, fn
       {:"::", _, [{{:., _, [Kernel, :to_string]}, _, [_]}, {:binary, _, _}]} -> true
       binary when is_binary(binary) -> true
@@ -544,8 +555,12 @@ defmodule Code.Normalizer do
     end)
   end
 
-  defp interpolated?(_) do
-    false
+  defp list_interpolated?(parts) do
+    Enum.all?(parts, fn
+      {{:., _, [Kernel, :to_string]}, _, [_]} -> true
+      binary when is_binary(binary) -> true
+      _ -> false
+    end)
   end
 
   defp patch_meta_line(meta, parent_meta) do
@@ -575,7 +590,7 @@ defmodule Code.Normalizer do
 
   defp keyword?([{key, _value} | rest]) when is_atom(key) do
     case Atom.to_charlist(key) do
-      'Elixir.' ++ _ -> false
+      ~c"Elixir." ++ _ -> false
       _ -> keyword?(rest)
     end
   end

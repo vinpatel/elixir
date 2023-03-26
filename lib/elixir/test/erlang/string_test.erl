@@ -3,13 +3,12 @@
 -include_lib("eunit/include/eunit.hrl").
 
 eval(Content) ->
-  {Value, Binding, _} =
-    elixir:eval_forms(elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []), [], []),
+  Quoted = elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []),
+  {Value, Binding, _} = elixir:eval_forms(Quoted, [], elixir:env_for_eval([])),
   {Value, Binding}.
 
 extract_interpolations(String) ->
-  Tokenizer = #elixir_tokenizer{file = <<"nofile">>},
-  case elixir_interpolation:extract(1, 1, Tokenizer, true, String ++ [$"], $") of
+  case elixir_interpolation:extract(1, 1, #elixir_tokenizer{}, true, String ++ [$"], $") of
     {error, Error} ->
       Error;
     {_, _, Parts, _, _} ->
@@ -23,8 +22,8 @@ extract_interpolations_without_interpolation_test() ->
 
 extract_interpolations_with_escaped_interpolation_test() ->
   ["f\\#{o}o"] = extract_interpolations("f\\#{o}o"),
-  {1, 8, ["f\\#{o}o"], [], _} = elixir_interpolation:extract(1, 2,
-    #elixir_tokenizer{file = <<"nofile">>}, true, "f\\#{o}o\"", $").
+  {1, 8, ["f\\#{o}o"], [], _} =
+    elixir_interpolation:extract(1, 2, #elixir_tokenizer{}, true, "f\\#{o}o\"", $").
 
 extract_interpolations_with_interpolation_test() ->
   ["f",

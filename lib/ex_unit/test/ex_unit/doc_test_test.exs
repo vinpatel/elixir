@@ -67,27 +67,6 @@ defmodule ExUnit.DocTestTest.GoodModule do
   bar
   """
   def multiline_exception_test, do: :ok
-
-  @doc """
-  iex> Enum.into([:a, :b, :c], MapSet.new())
-  #MapSet<[:a, :b, :c]>
-  """
-  def inspect1_test, do: :ok
-
-  @doc """
-  iex> x = Enum.into([:a, :b, :c], MapSet.new())
-  ...> x
-  #MapSet<[:a, :b, :c]>
-  """
-  def inspect2_test, do: :ok
-
-  @doc """
-       iex> x = Enum.into([:a, :b, :c], MapSet.new())
-       ...> x
-       #MapSet<[:a, :b, :c]>
-       """
-       |> String.replace("\n", "\r\n")
-  def crlf_test, do: :ok
 end
 |> ExUnit.BeamHelpers.write_beam()
 
@@ -175,7 +154,7 @@ defmodule ExUnit.DocTestTest.Invalid do
       "This is a much shorter text string."
 
       iex> :oops
-      #MapSet<[]>
+      #Inspect<[]>
 
       iex> Hello.world()
       :world
@@ -231,8 +210,8 @@ defmodule ExUnit.DocTestTest.Invalid do
   def invalid_utf8, do: :ok
 
   @doc """
-      iex> {:ok, MapSet.new([1, 2, 3])}
-      {:ok, #MapSet<[1, 2, 3]>}
+      iex> {:ok, :oops}
+      {:ok, #Inspect<[]>}
   """
   def misplaced_opaque_type, do: :ok
 
@@ -375,6 +354,7 @@ defmodule ExUnit.DocTestTest.Haiku do
 
   @doc """
   Creates a new Haiku.
+
   Optionally pass in the `author` as fourth argument.
 
   ## Examples:
@@ -405,6 +385,18 @@ defmodule ExUnit.DocTestTest.Haiku do
       author: author
     }
   end
+
+  @doc """
+       iex> ExUnit.DocTestTest.Haiku.new("古池や", "蛙飛びこむ", "水の音", "Matsuo Basho")
+       #Haiku<
+         古池や
+         蛙飛びこむ
+         水の音
+         -- Matsuo Basho
+       >
+       """
+       |> String.replace("\n", "\r\n")
+  def crlf_test, do: :ok
 
   defimpl Inspect do
     def inspect(haiku, _opts) do
@@ -470,7 +462,10 @@ defmodule ExUnit.DocTestTest do
   # doctest ExUnit.DocTest
 
   doctest ExUnit.DocTestTest.GoodModule, import: true
-  doctest ExUnit.DocTestTest.SomewhatGoodModuleWithOnly, only: [one: 0], import: true
+
+  doctest ExUnit.DocTestTest.SomewhatGoodModuleWithOnly,
+    only: [:moduledoc, one: 0],
+    import: true
 
   doctest ExUnit.DocTestTest.SomewhatGoodModuleWithExcept,
     except: [:moduledoc, two: 0],
@@ -582,10 +577,10 @@ defmodule ExUnit.DocTestTest do
                 Doctest failed
                 doctest:
                   iex> :oops
-                  "#MapSet<[]>"
-                code:  inspect(:oops) === "#MapSet<[]>"
+                  #Inspect<[]>
+                code:  inspect(:oops) === "#Inspect<[]>"
                 left:  ":oops"
-                right: "#MapSet<[]>"
+                right: "#Inspect<[]>"
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 12}: ExUnit.DocTestTest.Invalid (module)
            """
@@ -605,7 +600,7 @@ defmodule ExUnit.DocTestTest do
                 Doctest failed: expected exception WhatIsThis but got RuntimeError with message "oops"
                 doctest:
                   iex> raise "oops"
-                  ** (WhatIsThis) "oops"
+                  ** (WhatIsThis) oops
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 18}: ExUnit.DocTestTest.Invalid (module)
            """
@@ -620,7 +615,7 @@ defmodule ExUnit.DocTestTest do
                   "oops"
                 doctest:
                   iex> raise "oops"
-                  ** (RuntimeError) "hello"
+                  ** (RuntimeError) hello
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 21}: ExUnit.DocTestTest.Invalid (module)
            """
@@ -640,18 +635,17 @@ defmodule ExUnit.DocTestTest do
            """
 
     assert output =~ """
-             9) doctest ExUnit.DocTestTest.Invalid.dedented_past_fence/0 (9) (ExUnit.DocTestTest.ActuallyCompiled)
+            9) doctest ExUnit.DocTestTest.Invalid.b/0 (9) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
-                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 57}:5: unexpected token: "`" (column 5, code point U+0060)
-                 #{line_placeholder(starting_line + 57)} |
-                 #{starting_line + 57} |     ```
-                 #{line_placeholder(starting_line + 57)} |     ^
+                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 33}:6: syntax error before: '*'
+                 #{line_placeholder(starting_line + 33)} |
+                 #{starting_line + 33} |  1 + * 1
+                 #{line_placeholder(starting_line + 33)} |      ^
                 doctest:
-                  iex> 1 + 2
-                  3
-                      ```
+                  iex> 1 + * 1
+                  1
                 stacktrace:
-                  test/ex_unit/doc_test_test.exs:#{starting_line + 56}: ExUnit.DocTestTest.Invalid (module)
+                  test/ex_unit/doc_test_test.exs:#{starting_line + 33}: ExUnit.DocTestTest.Invalid (module)
            """
 
     assert output =~ """
@@ -685,7 +679,22 @@ defmodule ExUnit.DocTestTest do
            """
 
     assert output =~ """
-            12) doctest ExUnit.DocTestTest.Invalid.invalid_utf8/0 (12) (ExUnit.DocTestTest.ActuallyCompiled)
+            12) doctest ExUnit.DocTestTest.Invalid.dedented_past_fence/0 (12) (ExUnit.DocTestTest.ActuallyCompiled)
+                test/ex_unit/doc_test_test.exs:#{doctest_line}
+                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 57}:5: unexpected token: "`" (column 5, code point U+0060)
+                 #{line_placeholder(starting_line + 57)} |
+                 #{starting_line + 57} |     ```
+                 #{line_placeholder(starting_line + 57)} |     ^
+                doctest:
+                  iex> 1 + 2
+                  3
+                      ```
+                stacktrace:
+                  test/ex_unit/doc_test_test.exs:#{starting_line + 56}: ExUnit.DocTestTest.Invalid (module)
+           """
+
+    assert output =~ """
+            13) doctest ExUnit.DocTestTest.Invalid.invalid_utf8/0 (13) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
                 Doctest did not compile, got: (UnicodeConversionError) invalid encoding starting at <<255, 34, 41>>
                 stacktrace:
@@ -693,42 +702,22 @@ defmodule ExUnit.DocTestTest do
            """
 
     assert output =~ """
-            13) doctest ExUnit.DocTestTest.Invalid.misplaced_opaque_type/0 (13) (ExUnit.DocTestTest.ActuallyCompiled)
+            14) doctest ExUnit.DocTestTest.Invalid.misplaced_opaque_type/0 (14) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
                 Doctest did not compile, got: (TokenMissingError) test/ex_unit/doc_test_test.exs:#{starting_line + 69}:7: missing terminator: } (for "{" starting at line #{starting_line + 69})
                  #{line_placeholder(starting_line + 69)} |
-                 #{starting_line + 69} | {:ok, #MapSet<[1, 2, 3]>}
+                 #{starting_line + 69} | {:ok, #Inspect<[]>}
                  #{line_placeholder(starting_line + 69)} |       ^
                 If you are planning to assert on the result of an iex> expression which contains a value inspected as #Name<...>, please make sure the inspected value is placed at the beginning of the expression; otherwise Elixir will treat it as a comment due to the leading sign #.
                 doctest:
-                  iex> {:ok, MapSet.new([1, 2, 3])}
-                  {:ok, #MapSet<[1, 2, 3]>}
+                  iex> {:ok, :oops}
+                  {:ok, #Inspect<[]>}
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 69}: ExUnit.DocTestTest.Invalid (module)
            """
 
-    assert output =~ "14) doctest ExUnit.DocTestTest.Invalid.raising_inspect/0"
-    assert output =~ "iex> ExUnit.DocTestTest.Haiku.new(:this, :is, {:not, :a, :haiku})"
-
-    assert output =~
-             "test/ex_unit/doc_test_test.exs:#{starting_line + 82}: ExUnit.DocTestTest.Invalid (module)"
-
     assert output =~ """
-            15) doctest ExUnit.DocTestTest.Invalid.b/0 (15) (ExUnit.DocTestTest.ActuallyCompiled)
-                test/ex_unit/doc_test_test.exs:#{doctest_line}
-                Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 33}:6: syntax error before: '*'
-                 #{line_placeholder(starting_line + 33)} |
-                 #{starting_line + 33} |  1 + * 1
-                 #{line_placeholder(starting_line + 33)} |      ^
-                doctest:
-                  iex> 1 + * 1
-                  1
-                stacktrace:
-                  test/ex_unit/doc_test_test.exs:#{starting_line + 33}: ExUnit.DocTestTest.Invalid (module)
-           """
-
-    assert output =~ """
-            16) doctest ExUnit.DocTestTest.Invalid.t/0 (16) (ExUnit.DocTestTest.ActuallyCompiled)
+            15) doctest ExUnit.DocTestTest.Invalid.t/0 (15) (ExUnit.DocTestTest.ActuallyCompiled)
                 test/ex_unit/doc_test_test.exs:#{doctest_line}
                 Doctest did not compile, got: (SyntaxError) test/ex_unit/doc_test_test.exs:#{starting_line + 75}:6: syntax error before: '*'
                  #{line_placeholder(starting_line + 75)} |
@@ -740,6 +729,12 @@ defmodule ExUnit.DocTestTest do
                 stacktrace:
                   test/ex_unit/doc_test_test.exs:#{starting_line + 75}: ExUnit.DocTestTest.Invalid (module)
            """
+
+    assert output =~ "16) doctest ExUnit.DocTestTest.Invalid.raising_inspect/0"
+    assert output =~ "iex> ExUnit.DocTestTest.Haiku.new(:this, :is, {:not, :a, :haiku})"
+
+    assert output =~
+             "test/ex_unit/doc_test_test.exs:#{starting_line + 82}: ExUnit.DocTestTest.Invalid (module)"
   end
 
   test "pattern matching assertions in doctests" do
@@ -870,18 +865,17 @@ defmodule ExUnit.DocTestTest do
     end
   end
 
-  test "doctests type" do
-    defmodule DoctestType do
-      use ExUnit.Case
-      doctest ExUnit.DocTestTest.NoImport
+  test "doctests built-in tags" do
+    alias ExUnit.DocTestTest.NoImport
 
-      setup test do
-        assert test.test_type == :doctest
-        :ok
-      end
+    defmodule DoctestTags do
+      use ExUnit.Case, register: false
+      doctest NoImport
     end
 
-    assert capture_io(fn -> ExUnit.run() end) =~ "2 doctests, 0 failures"
+    assert %ExUnit.TestModule{tests: [test1, test2]} = DoctestTags.__ex_unit__()
+    assert %{test_type: :doctest, doctest: NoImport, doctest_line: 129} = test1.tags
+    assert %{test_type: :doctest, doctest: NoImport, doctest_line: 132} = test2.tags
   end
 
   test "multiple exceptions in one test case is not supported" do
@@ -896,12 +890,32 @@ defmodule ExUnit.DocTestTest do
   end
 
   test "fails on invalid module" do
-    message = ~r"module ExUnit\.DocTestTest\.Unknown is not loaded and could not be found"
+    assert capture_io(:stderr, fn ->
+             assert_raise CompileError, fn ->
+               defmodule NeverCompiled do
+                 import ExUnit.DocTest
+                 doctest ExUnit.DocTestTest.Unknown
+               end
+             end
+           end) =~ "module ExUnit.DocTestTest.Unknown is not loaded and could not be found"
+  end
 
-    assert_raise CompileError, message, fn ->
+  test "fails when testing functions are not found" do
+    message = """
+    test/ex_unit/doc_test_test\.exs: undefined or private functions given to doctest:
+
+        ExUnit.DocTestTest.SomewhatGoodModuleWithOnly.three/0
+        ExUnit.DocTestTest.SomewhatGoodModuleWithOnly.four/1
+
+    """
+
+    assert_raise ExUnit.DocTest.Error, message, fn ->
       defmodule NeverCompiled do
         import ExUnit.DocTest
-        doctest ExUnit.DocTestTest.Unknown
+
+        doctest ExUnit.DocTestTest.SomewhatGoodModuleWithOnly,
+          only: [three: 0, four: 1],
+          import: true
       end
     end
   end
@@ -956,6 +970,51 @@ defmodule ExUnit.DocTestTest do
         doctest ExUnit.DocTestTest.Invalid
       end
     end
+  end
+
+  test "doctest file passing" do
+    defmodule FilePassing do
+      use ExUnit.Case
+      doctest_file(Path.expand("../fixtures/passing.md", __DIR__))
+    end
+
+    output = capture_io(fn -> ExUnit.run() end)
+    assert output =~ "2 doctests, 0 failures"
+  end
+
+  test "doctest file failing" do
+    defmodule FileFailing do
+      use ExUnit.Case
+      doctest_file(Path.expand("../fixtures/failing.md", __DIR__))
+    end
+
+    doctest_line = __ENV__.line - 3
+    ExUnit.configure(seed: 0, colors: [enabled: false])
+    output = capture_io(fn -> ExUnit.run() end)
+
+    assert output =~ """
+             1) doctest test/fixtures/failing.md (1) (ExUnit.DocTestTest.FileFailing)
+                test/ex_unit/doc_test_test.exs:#{doctest_line}
+                Doctest failed
+                doctest:
+                  iex> 1 + 2
+                  4
+                code:  1 + 2 === 4
+                left:  3
+                right: 4
+                stacktrace:
+                  test/fixtures/failing.md:4: ExUnit.DocTestTest.FileFailing (module)
+           """
+  end
+
+  test "doctest direct invocation" do
+    defmodule Direct do
+      use ExUnit.Case, register: false
+      doctest ExUnit.DocTestTest.GoodModule, import: true
+    end
+
+    [head | _] = Direct.__ex_unit__().tests
+    assert apply(Direct, head.name, [%{}]) == {:ok, 2}
   end
 
   defp line_placeholder(line_number) do

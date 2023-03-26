@@ -44,7 +44,7 @@ defmodule Kernel.ParallelCompilerTest do
         end)
 
       assert profile =~
-               ~r"\[profile\] [\s\d]{6}ms compiling \+      0ms waiting for .*tmp/profile_time/bar.ex"
+               ~r"\[profile\] [\s\d]{6}ms compiling \+      0ms waiting while compiling .*tmp/profile_time/bar.ex"
 
       assert profile =~ ~r"\[profile\] Finished compilation cycle of 1 modules in \d+ms"
       assert profile =~ ~r"\[profile\] Finished group pass check of 1 modules in \d+ms"
@@ -146,12 +146,54 @@ defmodule Kernel.ParallelCompilerTest do
 
       expected_msg = "Undef.__struct__/1 is undefined, cannot expand struct Undef"
 
-      assert capture_io(fn ->
+      assert capture_io(:stderr, fn ->
+               assert {:error, [{^fixture, 3, msg}, {^fixture, 0, compile_msg}], []} =
+                        Kernel.ParallelCompiler.compile([fixture])
+
+               assert msg =~ expected_msg
+               assert compile_msg =~ "cannot compile module Undef (errors have been logged)"
+             end) =~ expected_msg
+    end
+
+    test "returns error when fails to expand struct" do
+      [fixture] =
+        write_tmp(
+          "compile_struct_invalid_key",
+          undef: """
+          defmodule InvalidStructKey do
+            def invalid_struct_key() do
+              %Date{invalid_key: 2020}
+            end
+          end
+          """
+        )
+
+      expected_msg = "** (KeyError) key :invalid_key not found"
+
+      assert capture_io(:stderr, fn ->
                assert {:error, [{^fixture, 3, msg}], []} =
                         Kernel.ParallelCompiler.compile([fixture])
 
                assert msg =~ expected_msg
              end) =~ expected_msg
+    end
+
+    test "does not crash with pending monitor message" do
+      {pid, ref} = spawn_monitor(fn -> :ok end)
+
+      [fixture] =
+        write_tmp(
+          "quick_example",
+          quick_example: """
+          defmodule QuickExample do
+          end
+          """
+        )
+
+      assert {:ok, [QuickExample], []} = Kernel.ParallelCompiler.compile([fixture])
+      assert_received {:DOWN, ^ref, _, ^pid, :normal}
+    after
+      purge([QuickExample])
     end
 
     test "does not hang on missing dependencies" do
@@ -173,12 +215,15 @@ defmodule Kernel.ParallelCompilerTest do
       expected_msg =
         "ThisModuleWillNeverBeAvailable.__struct__/1 is undefined, cannot expand struct ThisModuleWillNeverBeAvailable"
 
-      assert capture_io(fn ->
-               assert {:error, [{^fixture, 7, msg}], []} =
+      assert capture_io(:stderr, fn ->
+               assert {:error, [{^fixture, 7, msg}, {^fixture, 0, compile_msg}], []} =
                         Kernel.ParallelCompiler.compile([fixture])
 
                assert msg =~ expected_msg
-             end) =~ "== Compilation error"
+
+               assert compile_msg =~
+                        "cannot compile module WithBehaviourAndStruct (errors have been logged)"
+             end) =~ expected_msg
     end
 
     test "does not deadlock on missing dependencies" do
@@ -199,12 +244,15 @@ defmodule Kernel.ParallelCompilerTest do
       expected_msg =
         "ThisModuleWillNeverBeAvailable.__struct__/1 is undefined, cannot expand struct ThisModuleWillNeverBeAvailable"
 
-      assert capture_io(fn ->
-               assert {:error, [{^missing_struct, 2, msg}], []} =
+      assert capture_io(:stderr, fn ->
+               assert {:error, [{^missing_struct, 2, msg}, {^missing_struct, 0, compile_msg}], []} =
                         Kernel.ParallelCompiler.compile([missing_struct, depends_on])
 
                assert msg =~ expected_msg
-             end) =~ "== Compilation error"
+
+               assert compile_msg =~
+                        "cannot compile module MissingStruct (errors have been logged)"
+             end) =~ expected_msg
     end
 
     test "does not deadlock on missing import/struct dependencies" do
@@ -221,12 +269,17 @@ defmodule Kernel.ParallelCompilerTest do
           """
         )
 
-      assert capture_io(fn ->
-               assert {:error, [{^missing_import, 2, msg}], []} =
+      expected_msg = "module Unknown.Module is not loaded and could not be found"
+
+      assert capture_io(:stderr, fn ->
+               assert {:error, [{^missing_import, 2, msg}, {^missing_import, 0, compile_msg}], []} =
                         Kernel.ParallelCompiler.compile([missing_import, depends_on])
 
-               assert msg =~ "module Unknown.Module is not loaded and could not be found"
-             end) =~ "== Compilation error"
+               assert msg =~ expected_msg
+
+               assert compile_msg =~
+                        "cannot compile module MissingStruct (errors have been logged)"
+             end) =~ expected_msg
     end
 
     test "handles deadlocks" do
@@ -246,9 +299,9 @@ defmodule Kernel.ParallelCompilerTest do
         )
 
       msg =
-        capture_io(fn ->
+        capture_io(:stderr, fn ->
           fixtures = [foo, bar]
-          assert {:error, [bar_error, foo_error], []} = Kernel.ParallelCompiler.compile(fixtures)
+          assert {:error, [foo_error, bar_error], []} = Kernel.ParallelCompiler.compile(fixtures)
           assert bar_error == {bar, nil, "deadlocked waiting on module FooDeadlock"}
           assert foo_error == {foo, nil, "deadlocked waiting on module BarDeadlock"}
         end)
@@ -257,9 +310,9 @@ defmodule Kernel.ParallelCompilerTest do
       assert msg =~ "parallel_deadlock/foo.ex => BarDeadlock"
       assert msg =~ "parallel_deadlock/bar.ex => FooDeadlock"
       assert msg =~ ~r"== Compilation error in file .+parallel_deadlock/foo\.ex =="
-      assert msg =~ "** (CompileError)  deadlocked waiting on module BarDeadlock"
+      assert msg =~ "** (CompileError) deadlocked waiting on module BarDeadlock"
       assert msg =~ ~r"== Compilation error in file .+parallel_deadlock/bar\.ex =="
-      assert msg =~ "** (CompileError)  deadlocked waiting on module FooDeadlock"
+      assert msg =~ "** (CompileError) deadlocked waiting on module FooDeadlock"
     end
 
     test "does not deadlock from Code.ensure_compiled" do
@@ -305,7 +358,7 @@ defmodule Kernel.ParallelCompilerTest do
           """
         )
 
-      capture_io(fn ->
+      capture_io(:stderr, fn ->
         fixtures = [foo, bar]
         assert assert {:ok, modules, []} = Kernel.ParallelCompiler.compile(fixtures)
         assert FooAsync in modules
@@ -335,9 +388,9 @@ defmodule Kernel.ParallelCompilerTest do
           """
         )
 
-      capture_io(fn ->
+      capture_io(:stderr, fn ->
         fixtures = [foo, bar]
-        assert {:error, [bar_error, foo_error], []} = Kernel.ParallelCompiler.compile(fixtures)
+        assert {:error, [foo_error, bar_error], []} = Kernel.ParallelCompiler.compile(fixtures)
         assert bar_error == {bar, nil, "deadlocked waiting on module FooAsyncDeadlock"}
         assert foo_error == {foo, nil, "deadlocked waiting on module BarAsyncDeadlock"}
       end)
@@ -402,7 +455,7 @@ defmodule Kernel.ParallelCompilerTest do
           """
         )
 
-      capture_io(fn ->
+      capture_io(:stderr, fn ->
         assert {:error, [{^b, 0, _}], _} = Kernel.ParallelCompiler.compile([a, b])
       end)
     end
@@ -419,7 +472,7 @@ defmodule Kernel.ParallelCompilerTest do
           """
         )
 
-      capture_io(fn ->
+      capture_io(:stderr, fn ->
         assert {:error, [{^fixture, 2, _}], _} = Kernel.ParallelCompiler.compile([fixture])
       end)
     end
@@ -456,11 +509,12 @@ defmodule Kernel.ParallelCompilerTest do
 
       expected_msg = "Undef.__struct__/1 is undefined, cannot expand struct Undef"
 
-      assert capture_io(fn ->
-               assert {:error, [{^fixture, 3, msg}], []} =
+      assert capture_io(:stderr, fn ->
+               assert {:error, [{^fixture, 3, msg}, {^fixture, 0, compile_msg}], []} =
                         Kernel.ParallelCompiler.require([fixture])
 
                assert msg =~ expected_msg
+               assert compile_msg =~ "cannot compile module Undef (errors have been logged)"
              end) =~ expected_msg
     end
 
@@ -483,12 +537,15 @@ defmodule Kernel.ParallelCompilerTest do
       expected_msg =
         "ThisModuleWillNeverBeAvailable.__struct__/1 is undefined, cannot expand struct ThisModuleWillNeverBeAvailable"
 
-      assert capture_io(fn ->
-               assert {:error, [{^fixture, 7, msg}], []} =
+      assert capture_io(:stderr, fn ->
+               assert {:error, [{^fixture, 7, msg}, {^fixture, 0, compile_msg}], []} =
                         Kernel.ParallelCompiler.require([fixture])
 
                assert msg =~ expected_msg
-             end) =~ "== Compilation error"
+
+               assert compile_msg =~
+                        "cannot compile module WithBehaviourAndStruct (errors have been logged)"
+             end) =~ expected_msg
     end
 
     test "supports warnings as errors" do

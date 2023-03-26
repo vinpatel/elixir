@@ -45,9 +45,6 @@ defmodule Mix.Tasks.Release.Init do
     ## Customize flags given to the VM: https://www.erlang.org/doc/man/erl.html
     ## -mode/-name/-sname/-setcookie are configured via env vars, do not set them here
 
-    ## Number of dirty schedulers doing IO work (file, sockets, and others)
-    ##+SDio 5
-
     ## Increase number of concurrent ports/sockets
     ##+Q 65536
 
@@ -60,7 +57,7 @@ defmodule Mix.Tasks.Release.Init do
     do: ~S"""
     #!/bin/sh
 
-    # Sets and enables heart (recommended only in daemon mode)
+    # # Sets and enables heart (recommended only in daemon mode)
     # case $RELEASE_COMMAND in
     #   daemon*)
     #     HEART_COMMAND="$RELEASE_ROOT/bin/$RELEASE_NAME $RELEASE_COMMAND"
@@ -71,8 +68,11 @@ defmodule Mix.Tasks.Release.Init do
     #     ;;
     # esac
 
-    # Set the release to work across nodes.
-    # RELEASE_DISTRIBUTION must be "sname" (local), "name" (distributed) or "none".
+    # # Set the release to load code on demand (interactive) instead of preloading (embedded).
+    # export RELEASE_MODE=interactive
+
+    # # Set the release to work across nodes.
+    # # RELEASE_DISTRIBUTION must be "sname" (local), "name" (distributed) or "none".
     # export RELEASE_DISTRIBUTION=name
     # export RELEASE_NODE=<%= @release.name %>
     """
@@ -93,8 +93,6 @@ defmodule Mix.Tasks.Release.Init do
     export RELEASE_VSN
     RELEASE_COMMAND="$1"
     export RELEASE_COMMAND
-    RELEASE_MODE="${RELEASE_MODE:-"embedded"}"
-    export RELEASE_MODE
     RELEASE_PROG="${RELEASE_PROG:-"$(echo "$0" | sed 's/.*\///')"}"
     export RELEASE_PROG
 
@@ -103,6 +101,8 @@ defmodule Mix.Tasks.Release.Init do
 
     RELEASE_COOKIE="${RELEASE_COOKIE:-"$(cat "$RELEASE_ROOT/releases/COOKIE")"}"
     export RELEASE_COOKIE
+    RELEASE_MODE="${RELEASE_MODE:-"embedded"}"
+    export RELEASE_MODE
     RELEASE_NODE="${RELEASE_NODE:-"$RELEASE_NAME"}"
     export RELEASE_NODE
     RELEASE_TMP="${RELEASE_TMP:-"$RELEASE_ROOT/tmp"}"
@@ -201,14 +201,15 @@ defmodule Mix.Tasks.Release.Init do
           echo "ERROR: EVAL expects an expression as argument" >&2
           exit 1
         fi
-
+        script="$2"
+        shift 2
         export_release_sys_config
         exec "$REL_VSN_DIR/elixir" \
            --cookie "$RELEASE_COOKIE" \
            --erl-config "$RELEASE_SYS_CONFIG" \
            --boot "$REL_VSN_DIR/$RELEASE_BOOT_SCRIPT_CLEAN" \
            --boot-var RELEASE_LIB "$RELEASE_ROOT/lib" \
-           --vm-args "$RELEASE_VM_ARGS" --eval "$2"
+           --vm-args "$RELEASE_VM_ARGS" --eval "$script" -- "$@"
         ;;
 
       remote)
@@ -271,6 +272,9 @@ defmodule Mix.Tasks.Release.Init do
   def env_bat_text,
     do: ~S"""
     @echo off
+    rem Set the release to load code on demand (interactive) instead of preloading (embedded).
+    rem set RELEASE_MODE=interactive
+
     rem Set the release to work across nodes.
     rem RELEASE_DISTRIBUTION must be "sname" (local), "name" (distributed) or "none".
     rem set RELEASE_DISTRIBUTION=name
@@ -290,13 +294,13 @@ defmodule Mix.Tasks.Release.Init do
 
     if not defined RELEASE_NAME (set RELEASE_NAME=<%= @release.name %>)
     if not defined RELEASE_VSN (for /f "tokens=1,2" %%K in ('type "!RELEASE_ROOT!\releases\start_erl.data"') do (set ERTS_VSN=%%K) && (set RELEASE_VSN=%%L))
-    if not defined RELEASE_MODE (set RELEASE_MODE=embedded)
     if not defined RELEASE_PROG (set RELEASE_PROG=%~nx0)
     set RELEASE_COMMAND=%~1
     set REL_VSN_DIR=!RELEASE_ROOT!\releases\!RELEASE_VSN!
     call "!REL_VSN_DIR!\env.bat"
 
     if not defined RELEASE_COOKIE (set /p RELEASE_COOKIE=<!RELEASE_ROOT!\releases\COOKIE)
+    if not defined RELEASE_MODE (set RELEASE_MODE=embedded)
     if not defined RELEASE_NODE (set RELEASE_NODE=!RELEASE_NAME!)
     if not defined RELEASE_TMP (set RELEASE_TMP=!RELEASE_ROOT!\tmp)
     if not defined RELEASE_VM_ARGS (set RELEASE_VM_ARGS=!REL_VSN_DIR!\vm.args)
@@ -382,13 +386,21 @@ defmodule Mix.Tasks.Release.Init do
     goto end
 
     :eval
+    set EVAL=%~2
+    shift
+    :loop
+    shift
+    if not "%1"=="" (
+      set args=%args% %1
+      goto :loop
+    )
     "!REL_VSN_DIR!\elixir.bat" ^
-      --eval "%~2" ^
+      --eval "!EVAL!" ^
       --cookie "!RELEASE_COOKIE!" ^
       --erl-config "!RELEASE_SYS_CONFIG!" ^
       --boot "!REL_VSN_DIR!\!RELEASE_BOOT_SCRIPT_CLEAN!" ^
       --boot-var RELEASE_LIB "!RELEASE_ROOT!\lib" ^
-      --vm-args "!RELEASE_VM_ARGS!"
+      --vm-args "!RELEASE_VM_ARGS!" -- %args%
     goto end
 
     :remote
@@ -411,7 +423,7 @@ defmodule Mix.Tasks.Release.Init do
     if "!RELEASE_DISTRIBUTION!" == "none" (
       set RELEASE_DISTRIBUTION_FLAG=
     ) else (
-      set RELEASE_DISTRIBUTION_FLAG=--!RELEASE_DISTRIBUTION! "rpc-!RANDOM!-!RELEASE_NODE!"
+      set RELEASE_DISTRIBUTION_FLAG=--!RELEASE_DISTRIBUTION! "rem-!RANDOM!-!RELEASE_NODE!"
     )
 
     "!REL_VSN_DIR!\elixir.bat" ^
@@ -442,8 +454,7 @@ defmodule Mix.Tasks.Release.Init do
     "!ERLSRV!" add "!RELEASE_NAME!_!RELEASE_NAME!" ^
       -!RELEASE_DISTRIBUTION! "!RELEASE_NODE!" ^
       -env RELEASE_ROOT="!RELEASE_ROOT!" -env RELEASE_NAME="!RELEASE_NAME!" -env RELEASE_VSN="!RELEASE_VSN!" -env RELEASE_MODE="!RELEASE_MODE!" -env RELEASE_COOKIE="!RELEASE_COOKIE!" -env RELEASE_NODE="!RELEASE_NODE!" -env RELEASE_VM_ARGS="!RELEASE_VM_ARGS!" -env RELEASE_TMP="!RELEASE_TMP!" -env RELEASE_SYS_CONFIG="!RELEASE_SYS_CONFIG!" ^
-      -args "-setcookie !RELEASE_COOKIE! -config !RELEASE_SYS_CONFIG! <%= release_mode(@release, "!RELEASE_MODE!") %> -boot !REL_VSN_DIR!\start -boot_var RELEASE_LIB !RELEASE_ROOT!\lib -args_file !REL_VSN_DIR!\vm.args"
-
+      -args "-setcookie !RELEASE_COOKIE! -config ""!RELEASE_SYS_CONFIG!"" <%= release_mode(@release, "!RELEASE_MODE!") %> -boot ""!REL_VSN_DIR!\start"" -boot_var RELEASE_LIB ""!RELEASE_ROOT!\lib"" -args_file ""!REL_VSN_DIR!\vm.args\"""
     if %ERRORLEVEL% EQU 0 (
       echo Service installed but not started. From now on, it must be started and stopped by erlsrv:
       echo.

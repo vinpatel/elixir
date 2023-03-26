@@ -7,8 +7,7 @@ defmodule Mix.Release do
   The Mix.Release struct has the following read-only fields:
 
     * `:name` - the name of the release as an atom
-    * `:version` - the version of the release as a string or
-       `{:from_app, app_name}`
+    * `:version` - the version of the release as a string
     * `:path` - the path to the release root
     * `:version_path` - the path to the release version inside the release
     * `:applications` - a map of application with their definitions
@@ -54,7 +53,7 @@ defmodule Mix.Release do
           name: atom(),
           version: String.t(),
           path: String.t(),
-          version_path: String.t() | {:from_app, application()},
+          version_path: String.t(),
           applications: %{application() => keyword()},
           boot_scripts: %{atom() => [{application(), mode()}]},
           erts_version: charlist(),
@@ -92,14 +91,15 @@ defmodule Mix.Release do
     {erts_source, erts_lib_dir, erts_version} = erts_data(include_erts)
 
     deps_apps = Mix.Project.deps_apps()
-    loaded_apps = apps |> Keyword.keys() |> load_apps(deps_apps, %{}, erts_lib_dir, [], :root)
+    loaded_apps = load_apps(apps, deps_apps, %{}, erts_lib_dir, [], apps)
 
     # Make sure IEx is either an active part of the release or add it as none.
     {loaded_apps, apps} =
       if Map.has_key?(loaded_apps, :iex) do
         {loaded_apps, apps}
       else
-        {load_apps([:iex], deps_apps, loaded_apps, erts_lib_dir, [], :root), apps ++ [iex: :none]}
+        {load_apps([iex: :none], deps_apps, loaded_apps, erts_lib_dir, [], apps),
+         apps ++ [iex: :none]}
       end
 
     start_boot = build_start_boot(loaded_apps, apps)
@@ -253,7 +253,7 @@ defmodule Mix.Release do
 
   defp erts_data(true) do
     version = :erlang.system_info(:version)
-    {:filename.join(:code.root_dir(), 'erts-#{version}'), :code.lib_dir(), version}
+    {:filename.join(:code.root_dir(), ~c"erts-#{version}"), :code.lib_dir(), version}
   end
 
   defp erts_data(erts_source) when is_binary(erts_source) do
@@ -266,45 +266,63 @@ defmodule Mix.Release do
     end
   end
 
-  defp load_apps(apps, deps_apps, seen, otp_root, optional, type) do
-    for app <- apps, reduce: seen do
+  defp load_apps(apps, deps_apps, seen, otp_root, optional, overrides) do
+    for {app, mode} <- apps, reduce: seen do
       seen ->
-        if reentrant_seen = reentrant(seen, app, type) do
-          reentrant_seen
-        else
-          load_app(app, deps_apps, seen, otp_root, optional, type)
+        properties = seen[app]
+
+        cond do
+          is_nil(properties) ->
+            load_app(app, overrides[app] || mode, deps_apps, seen, otp_root, optional, overrides)
+
+          Keyword.has_key?(overrides, app) ->
+            seen
+
+          new_mode = merge_mode!(app, mode, properties[:mode]) ->
+            apps =
+              properties
+              |> Keyword.get(:applications, [])
+              |> Enum.map(&{&1, new_mode})
+
+            seen = put_in(seen[app][:mode], new_mode)
+            load_apps(apps, deps_apps, seen, otp_root, [], overrides)
+
+          true ->
+            seen
         end
     end
   end
 
-  defp reentrant(seen, app, type) do
-    properties = seen[app]
+  defp merge_mode!(_app, mode, mode), do: nil
 
-    cond do
-      is_nil(properties) ->
-        nil
-
-      type != :root and properties[:type] != type ->
-        if properties[:type] == :root do
-          put_in(seen[app][:type], type)
-        else
-          Mix.raise(
-            "#{inspect(app)} is listed both as a regular application and as an included application"
-          )
-        end
-
-      true ->
-        seen
+  defp merge_mode!(app, left, right) do
+    if left == :included or right == :included do
+      Mix.raise(
+        "#{inspect(app)} is listed both as a regular application and as an included application"
+      )
+    else
+      merge_mode(left, right)
     end
   end
 
-  defp load_app(app, deps_apps, seen, otp_root, optional, type) do
+  defp merge_mode(:none, other), do: other
+  defp merge_mode(other, :none), do: other
+  defp merge_mode(:load, other), do: other
+  defp merge_mode(other, :load), do: other
+  defp merge_mode(:temporary, other), do: other
+  defp merge_mode(other, :temporary), do: other
+  defp merge_mode(:transient, other), do: other
+  defp merge_mode(other, :transient), do: other
+  defp merge_mode(:permanent, other), do: other
+  defp merge_mode(other, :permanent), do: other
+
+  defp load_app(app, mode, deps_apps, seen, otp_root, optional, overrides) do
     cond do
       path = app not in deps_apps && otp_path(otp_root, app) ->
-        do_load_app(app, path, deps_apps, seen, otp_root, true, type)
+        do_load_app(app, mode, path, deps_apps, seen, otp_root, true, overrides)
 
       path = code_path(app) ->
-        do_load_app(app, path, deps_apps, seen, otp_root, false, type)
+        do_load_app(app, mode, path, deps_apps, seen, otp_root, false, overrides)
 
       app in optional ->
         seen
@@ -330,17 +348,28 @@ defmodule Mix.Release do
     end
   end
 
-  defp do_load_app(app, path, deps_apps, seen, otp_root, otp_app?, type) do
+  defp do_load_app(app, mode, path, deps_apps, seen, otp_root, otp_app?, overrides) do
     case :file.consult(Path.join(path, "ebin/#{app}.app")) do
       {:ok, terms} ->
         [{:application, ^app, properties}] = terms
-        value = [path: path, otp_app?: otp_app?, type: type] ++ properties
+        value = [path: path, otp_app?: otp_app?, mode: mode] ++ properties
         seen = Map.put(seen, app, value)
-        applications = Keyword.get(properties, :applications, [])
+        child_mode = if mode == :included, do: :load, else: mode
+
+        applications =
+          properties
+          |> Keyword.get(:applications, [])
+          |> Enum.map(&{&1, child_mode})
+
         optional = Keyword.get(properties, :optional_applications, [])
-        seen = load_apps(applications, deps_apps, seen, otp_root, optional, :depended)
-        included_applications = Keyword.get(properties, :included_applications, [])
-        load_apps(included_applications, deps_apps, seen, otp_root, [], :included)
+        seen = load_apps(applications, deps_apps, seen, otp_root, optional, overrides)
+
+        included_applications =
+          properties
+          |> Keyword.get(:included_applications, [])
+          |> Enum.map(&{&1, :included})
+
+        load_apps(included_applications, deps_apps, seen, otp_root, [], overrides)
 
       {:error, reason} ->
         Mix.raise("Could not load #{app}.app. Reason: #{inspect(reason)}")
@@ -353,14 +382,13 @@ defmodule Mix.Release do
         for(
           {app, props} <- all_apps,
           not List.keymember?(specified_apps, app, 0),
-          do: {app, default_mode(props)}
+          do: {app, boot_mode(props[:mode])}
         )
       )
   end
 
-  defp default_mode(props) do
-    if props[:type] == :included, do: :load, else: :permanent
-  end
+  defp boot_mode(:included), do: :load
+  defp boot_mode(mode), do: mode
 
   defp build_start_clean_boot(boot) do
     for({app, _mode} <- boot, do: {app, :none})
@@ -523,7 +551,8 @@ defmodule Mix.Release do
   def make_cookie(release, path) do
     cond do
       cookie = release.options[:cookie] ->
-        Mix.Generator.create_file(path, cookie, quiet: true)
+        force? = Keyword.get(release.options, :overwrite, false)
+        Mix.Generator.create_file(path, cookie, quiet: true, force: force?)
         :ok
 
       File.exists?(path) ->
@@ -576,7 +605,7 @@ defmodule Mix.Release do
 
       case :systools.make_script(sys_path, sys_options) do
         {:ok, _module, _warnings} ->
-          script_path = sys_path ++ '.script'
+          script_path = sys_path ++ ~c".script"
           {:ok, [{:script, rel_info, instructions}]} = :file.consult(script_path)
 
           instructions =
@@ -599,7 +628,7 @@ defmodule Mix.Release do
     for {_, properties} <- release.applications,
         not Keyword.fetch!(properties, :otp_app?),
         uniq: true,
-        do: {'RELEASE_LIB', properties |> Keyword.fetch!(:path) |> :filename.dirname()}
+        do: {~c"RELEASE_LIB", properties |> Keyword.fetch!(:path) |> :filename.dirname()}
   end
 
   defp build_paths(release) do
@@ -626,7 +655,8 @@ defmodule Mix.Release do
       for {app, mode} <- modes do
         properties = Map.get(apps, app) || throw({:error, "Unknown application #{inspect(app)}"})
         children = Keyword.get(properties, :applications, [])
-        app in skip_mode_validation_for || validate_mode!(app, mode, modes, children)
+        optional = Keyword.get(properties, :optional_applications, [])
+        app in skip_mode_validation_for || validate_mode!(app, mode, modes, children, optional)
         build_app_for_release(app, mode, properties)
       end
 
@@ -635,7 +665,7 @@ defmodule Mix.Release do
     {:error, message} -> {:error, message}
   end
 
-  defp validate_mode!(app, mode, modes, children) do
+  defp validate_mode!(app, mode, modes, children, optional) do
     safe_mode? = mode in @safe_modes
 
     if not safe_mode? and mode not in @unsafe_modes do
@@ -650,7 +680,7 @@ defmodule Mix.Release do
       child_mode = Keyword.get(modes, child)
 
       cond do
-        is_nil(child_mode) ->
+        is_nil(child_mode) and child not in optional ->
           throw(
             {:error,
              "Application #{inspect(app)} is listed in the release boot, " <>
@@ -706,7 +736,7 @@ defmodule Mix.Release do
 
     Enum.map(instructions, fn
       {:path, paths} ->
-        if Enum.any?(paths, &List.starts_with?(&1, '$RELEASE_LIB')) do
+        if Enum.any?(paths, &List.starts_with?(&1, ~c"$RELEASE_LIB")) do
           {:path, prepend_paths ++ paths}
         else
           {:path, paths}
@@ -744,7 +774,7 @@ defmodule Mix.Release do
 
     release.erts_source
     |> Path.join("bin")
-    |> File.cp_r!(destination, fn _, _ -> false end)
+    |> File.cp_r!(destination, on_conflict: fn _, _ -> false end)
 
     _ = File.rm(Path.join(destination, "erl"))
     _ = File.rm(Path.join(destination, "erl.ini"))
@@ -794,14 +824,7 @@ defmodule Mix.Release do
       for dir <- @copy_app_dirs do
         source_dir = Path.join(source_app, dir)
         target_dir = Path.join(target_app, dir)
-
-        source_dir =
-          case File.read_link(source_dir) do
-            {:ok, link_target} -> Path.expand(link_target, source_app)
-            _ -> source_dir
-          end
-
-        File.exists?(source_dir) && File.cp_r!(source_dir, target_dir)
+        File.exists?(source_dir) && File.cp_r!(source_dir, target_dir, dereference_symlinks: true)
       end
 
       true
@@ -856,12 +879,18 @@ defmodule Mix.Release do
   def strip_beam(binary, options \\ []) when is_list(options) do
     chunks_to_keep = options[:keep] |> List.wrap() |> Enum.map(&String.to_charlist/1)
     all_chunks = Enum.uniq(@significant_chunks ++ chunks_to_keep)
+    compress? = Keyword.get(options, :compress, false)
 
     case :beam_lib.chunks(binary, all_chunks, [:allow_missing_chunks]) do
       {:ok, {_, chunks}} ->
         chunks = for {name, chunk} <- chunks, is_binary(chunk), do: {name, chunk}
         {:ok, binary} = :beam_lib.build_module(chunks)
-        {:ok, :zlib.gzip(binary)}
+
+        if compress? do
+          {:ok, :zlib.gzip(binary)}
+        else
+          {:ok, binary}
+        end
 
       {:error, _, _} = error ->
         error

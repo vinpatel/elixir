@@ -34,7 +34,7 @@ defmodule Mix.Task do
   For example, if the `args` in the above `echo` task were
   inspected, you might see something like this:
 
-      mix echo 'A and B' C --test
+      $ mix echo 'A and B' C --test
       ["A and B", "C", "--test"]
 
   Define the `@shortdoc` attribute if you wish to make the task
@@ -67,11 +67,6 @@ defmodule Mix.Task do
       on `mix help`
     * `@recursive` - runs the task recursively in umbrella projects
     * `@requirements` - list of required tasks to be run before the task
-    * `@preferred_cli_env` - recommends an environment in which to run the task.
-      It is used only if `MIX_ENV` is not yet set. Note `@preferred_cli_env` is
-      not loaded from dependencies as we need to know the environment in order to
-      load the dependencies themselves. In those cases, you can set the
-      `preferred_cli_env` configuration under `def project` in your `mix.exs`
 
   ## Documentation
 
@@ -213,24 +208,8 @@ defmodule Mix.Task do
     Mix.ProjectStack.recursing() != nil
   end
 
-  @doc """
-  Gets preferred CLI environment for the task.
-
-  Returns environment (for example, `:test`, or `:prod`), or `nil`.
-  """
-  @spec preferred_cli_env(task_name) :: atom | nil
-  def preferred_cli_env(task) when is_atom(task) or is_binary(task) do
-    case get(task) do
-      nil ->
-        nil
-
-      module ->
-        case List.keyfind(module.__info__(:attributes), :preferred_cli_env, 0) do
-          {:preferred_cli_env, [setting]} -> setting
-          _ -> nil
-        end
-    end
-  end
+  @deprecated "Configure the environment in your mix.exs"
+  defdelegate preferred_cli_env(task), to: Mix.CLI
 
   @doc """
   Gets the list of requirements for the given task.
@@ -332,7 +311,7 @@ defmodule Mix.Task do
   If there exists a task matching the given task name and it has not yet been
   invoked, this will run the task with the given `args` and return the result.
 
-  If there is an [alias](https://hexdocs.pm/mix/Mix.html#module-aliases) defined
+  If there is an [alias](Mix.html#module-aliases) defined
   for the given task name, the alias will be invoked instead of the original
   task.
 
@@ -347,29 +326,50 @@ defmodule Mix.Task do
   task is invalid. See `get!/1` for more information.
   """
   @spec run(task_name, [any]) :: any
-  def run(task, args \\ [])
-
-  def run(task, args) when is_atom(task) do
-    run(Atom.to_string(task), args)
+  def run(task, args \\ []) do
+    do_run(task, args, nil)
   end
 
-  def run(task, args) when is_binary(task) do
+  @doc """
+  Runs recursive tasks in the specified list of children apps for umbrella projects.
+
+  If the task is not recursive (whose purpose is to be run in children
+  applications), it runs at the project root level as usual. Calling
+  this function outside of an umbrella project root fails.
+  """
+  @doc since: "1.14.0"
+  @spec run_in_apps(task_name, [atom], [any]) :: any
+  def run_in_apps(task, apps, args \\ []) do
+    unless Mix.Project.umbrella?() do
+      Mix.raise(
+        "Could not run #{inspect(task)} with the --app option because this is not an umbrella project"
+      )
+    end
+
+    do_run(task, args, apps)
+  end
+
+  defp do_run(task, args, apps) when is_atom(task) do
+    do_run(Atom.to_string(task), args, apps)
+  end
+
+  defp do_run(task, args, apps) when is_binary(task) do
     proj = Mix.Project.get()
     alias = Mix.Project.config()[:aliases][String.to_atom(task)]
 
     cond do
       alias && Mix.TasksServer.run({:alias, task, proj}) ->
-        run_alias(List.wrap(alias), args, proj, task, :ok)
+        run_alias(List.wrap(alias), args, proj, task, apps, :ok)
 
       !Mix.TasksServer.get({:task, task, proj}) ->
-        run_task(proj, task, args)
+        run_task(proj, task, args, apps)
 
       true ->
         :noop
     end
   end
 
-  defp run_task(proj, task, args) do
+  defp run_task(proj, task, args, apps) do
     # 1. If the task is available, we run it.
     # 2. Otherwise we compile and load dependencies
     # 3. Finally, we compile the current project in hope it is available.
@@ -383,8 +383,11 @@ defmodule Mix.Task do
     cond do
       recursive && Mix.Project.umbrella?() ->
         Mix.ProjectStack.recur(fn ->
-          recur(fn _ -> run(task, args) end)
+          recur(fn _ -> run(task, args) end, apps)
         end)
+
+      apps && not recursive ->
+        run(task, args)
 
       not recursive && Mix.ProjectStack.recursing() ->
         Mix.ProjectStack.on_recursing_root(fn -> run(task, args) end)
@@ -445,24 +448,33 @@ defmodule Mix.Task do
     end
   end
 
-  defp run_alias([h | t], alias_args, proj, original_task, _res) when is_binary(h) do
+  defp run_alias([h | t], alias_args, proj, original_task, apps, _res) when is_binary(h) do
     case OptionParser.split(h) do
       [^original_task | args] ->
-        res = run_task(proj, original_task, args ++ alias_args)
-        run_alias(t, [], proj, original_task, res)
+        res = run_task(proj, original_task, args ++ alias_args, apps)
+        run_alias(t, [], proj, original_task, apps, res)
 
       [task | args] ->
-        res = run(task, join_args(args, alias_args, t))
-        run_alias(t, alias_args, proj, original_task, res)
+        res = do_run(task, join_args(args, alias_args, t), apps)
+        run_alias(t, alias_args, proj, original_task, apps, res)
     end
   end
 
-  defp run_alias([h | t], alias_args, proj, original_task, _res) when is_function(h, 1) do
-    res = h.(join_args([], alias_args, t))
-    run_alias(t, alias_args, proj, original_task, res)
+  defp run_alias([h | t], alias_args, proj, original_task, apps, _res)
+       when is_function(h, 1) do
+    res =
+      if apps do
+        Mix.ProjectStack.recur(fn ->
+          recur(fn _ -> h.(join_args([], alias_args, t)) end, apps)
+        end)
+      else
+        h.(join_args([], alias_args, t))
+      end
+
+    run_alias(t, alias_args, proj, original_task, apps, res)
   end
 
-  defp run_alias([h | _], _alias_args, _proj, _original_task, _res) do
+  defp run_alias([h | _], _alias_args, _proj, _original_task, _apps, _res) do
     Mix.raise(
       "Invalid Mix alias format, aliases can be either a string (representing a Mix task " <>
         "with arguments) or a function that takes one argument (a list of alias arguments), " <>
@@ -470,7 +482,7 @@ defmodule Mix.Task do
     )
   end
 
-  defp run_alias([], _alias_args, proj, original_task, res) do
+  defp run_alias([], _alias_args, proj, original_task, _apps, res) do
     Mix.TasksServer.put({:task, original_task, proj})
     res
   end
@@ -491,10 +503,10 @@ defmodule Mix.Task do
   @doc """
   Reenables a given task so it can be executed again down the stack.
 
-  Both alias and the regular stack are reenabled when this function
+  Both alias and the regular stack are re-enabled when this function
   is called.
 
-  If an umbrella project reenables a task, it is reenabled for all
+  If an umbrella project reenables a task, it is re-enabled for all
   child projects.
   """
   @spec reenable(task_name) :: :ok
@@ -507,9 +519,12 @@ defmodule Mix.Task do
 
     cond do
       recursive && Mix.Project.umbrella?() ->
-        recur(fn proj ->
-          Mix.TasksServer.delete_many([{:task, task, proj}, {:alias, task, proj}])
-        end)
+        recur(
+          fn proj ->
+            Mix.TasksServer.delete_many([{:task, task, proj}, {:alias, task, proj}])
+          end,
+          nil
+        )
 
       proj = !recursive && Mix.ProjectStack.recursing() ->
         Mix.TasksServer.delete_many([{:task, task, proj}, {:alias, task, proj}])
@@ -521,13 +536,23 @@ defmodule Mix.Task do
     :ok
   end
 
-  defp recur(fun) do
+  defp recur(fun, nil), do: run_in_children_projects(fun, Mix.Dep.Umbrella.cached())
+
+  defp recur(fun, apps) do
+    selected_children =
+      Mix.Dep.Umbrella.cached()
+      |> Enum.filter(fn %Mix.Dep{app: app} -> app in apps end)
+
+    run_in_children_projects(fun, selected_children)
+  end
+
+  defp run_in_children_projects(fun, deps) do
     # Get all dependency configuration but not the deps path
     # as we leave the control of the deps path still to the
     # umbrella child.
     config = Mix.Project.deps_config() |> Keyword.delete(:deps_path)
 
-    for %Mix.Dep{app: app, opts: opts} <- Mix.Dep.Umbrella.cached() do
+    for %Mix.Dep{app: app, opts: opts} <- deps do
       Mix.Project.in_project(app, opts[:path], [inherit_parent_config_files: true] ++ config, fun)
     end
   end
@@ -549,7 +574,7 @@ defmodule Mix.Task do
   """
   @spec task?(task_module) :: boolean
   def task?(module) when is_atom(module) do
-    match?('Elixir.Mix.Tasks.' ++ _, Atom.to_charlist(module)) and ensure_task?(module)
+    match?(~c"Elixir.Mix.Tasks." ++ _, Atom.to_charlist(module)) and ensure_task?(module)
   end
 
   defp ensure_task?(module) do

@@ -18,7 +18,7 @@ defmodule Mix.ProjectStack do
     GenServer.start_link(__MODULE__, :ok, name: @name)
   end
 
-  @spec on_clean_slate((() -> result)) :: result when result: var
+  @spec on_clean_slate((-> result)) :: result when result: var
   def on_clean_slate(callback) do
     previous_state = update_state(fn state -> {state, initial_state()} end)
 
@@ -41,6 +41,14 @@ defmodule Mix.ProjectStack do
     end)
   end
 
+  @spec pop_post_config(atom) :: term
+  def pop_post_config(key) do
+    update_state(fn {stack, post_config} ->
+      {value, post_config} = Keyword.pop(post_config, key)
+      {value, {stack, post_config}}
+    end)
+  end
+
   @spec merge_config(config) :: :ok
   def merge_config(config) do
     update_stack(fn
@@ -49,7 +57,7 @@ defmodule Mix.ProjectStack do
     end)
   end
 
-  @spec on_recursing_root((() -> result)) :: result when result: var
+  @spec on_recursing_root((-> result)) :: result when result: var
   def on_recursing_root(fun) do
     {top, file} =
       update_stack(fn stack ->
@@ -145,6 +153,14 @@ defmodule Mix.ProjectStack do
     end)
   end
 
+  @spec parent_umbrella_project_file() :: binary | nil
+  def parent_umbrella_project_file() do
+    get_stack(fn
+      [_, h | _] -> if h.config[:apps_path], do: h.file, else: nil
+      _ -> nil
+    end)
+  end
+
   @spec compile_env([term] | nil) :: [term] | nil
   def compile_env(compile_env) do
     update_stack(fn
@@ -213,7 +229,7 @@ defmodule Mix.ProjectStack do
     end)
   end
 
-  @spec recur((() -> result)) :: result when result: var
+  @spec recur((-> result)) :: result when result: var
   def recur(fun) do
     update_stack(fn [h | t] -> {:ok, [%{h | recursing?: true} | t]} end)
 
@@ -237,12 +253,11 @@ defmodule Mix.ProjectStack do
       else
         # Consider the first children to always have io_done
         # because we don't need to print anything unless another
-        # because we don't need to print anything unless another
         # project takes ahold of the shell.
         io_done? = stack == []
         config = Keyword.merge(config, post_config)
         manifest_file = Path.join(Mix.Project.manifest_path(config), @manifest)
-        parent_config = peek_config_files(config[:inherit_parent_config_files], stack)
+        parent_files = peek_config_files(config[:inherit_parent_config_files], stack)
 
         project = %{
           name: module,
@@ -252,7 +267,7 @@ defmodule Mix.ProjectStack do
           recursing?: false,
           io_done: io_done?,
           config_apps: [],
-          config_files: [manifest_file | parent_config],
+          config_files: [manifest_file | parent_files],
           config_mtime: nil,
           after_compiler: %{},
           compile_env: nil

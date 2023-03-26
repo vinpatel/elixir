@@ -17,6 +17,59 @@ defmodule Process do
   `Registry`, `Supervisor` and `Task` for building their systems and
   resort to this module for gathering information, trapping exits, links
   and monitoring.
+
+  ## Aliases
+
+  Aliases are a feature introduced in Erlang/OTP 24. An alias is a way
+  to refer to a PID in order to send messages to it. The advantage of using
+  aliases is that they can be deactivated even if the aliased process is still
+  running. If you send a message to a deactivated alias, nothing will happen.
+  This makes request/response scenarios easier to implement.
+
+  You can use `alias/0` or `alias/1` to set an alias, and then you can send
+  messages to that alias like you do with PIDs using `send/2`. To deactivate
+  an alias, you can use `unalias/1`. If you send a message to a deactivated alias,
+  nothing will happen.
+
+  For example, you could have a process that listens for `:ping` messages:
+
+      def server do
+        receive do
+          {:ping, source_alias} ->
+            send(source_alias, :pong)
+            server()
+        end
+      end
+
+  Now, another process might ping this process:
+
+      server = spawn(&server/0)
+
+      source_alias = Process.alias()
+      send(server, {:ping, source_alias})
+
+      receive do
+        :pong -> :pong
+      end
+      #=> :pong
+
+  If now you deactivate the `source_alias` and ping the server again, you
+  won't receive any response since the server will `send/2` the `:pong` response
+  to a deactivated alias.
+
+      Process.unalias(source_alias)
+      send(server, {:ping, source_alias})
+
+      receive do
+        :pong -> :pong
+      after
+        1000 -> :timeout
+      end
+      #=> :timeout
+
+  See also the [Process Aliases
+  section](https://www.erlang.org/doc/reference_manual/processes.html#process-aliases)
+  of the *Erlang reference manual*.
   """
 
   @typedoc """
@@ -116,7 +169,7 @@ defmodule Process do
   """
   @spec put(term, term) :: term | nil
   def put(key, value) do
-    nillify(:erlang.put(key, value))
+    nilify(:erlang.put(key, value))
   end
 
   @doc """
@@ -136,7 +189,7 @@ defmodule Process do
   """
   @spec delete(term) :: term | nil
   def delete(key) do
-    nillify(:erlang.erase(key))
+    nilify(:erlang.erase(key))
   end
 
   @doc """
@@ -383,7 +436,7 @@ defmodule Process do
   @type spawn_opt ::
           :link
           | :monitor
-          | {:monitor, monitor_option()}
+          | {:monitor, :erlang.monitor_option()}
           | {:priority, :low | :normal | :high}
           | {:fullsweep_after, non_neg_integer}
           | {:min_heap_size, non_neg_integer}
@@ -391,10 +444,6 @@ defmodule Process do
           | {:max_heap_size, heap_size}
           | {:message_queue_data, :off_heap | :on_heap}
   @type spawn_opts :: [spawn_opt]
-
-  # TODO: Use :erlang.monitor_option() on Erlang/OTP 24+
-  @typep monitor_option ::
-           [alias: :explicit_unalias | :demonitor | :reply_demonitor, tag: term()]
 
   @doc """
   Spawns the given function according to the given options.
@@ -417,7 +466,7 @@ defmodule Process do
       #=> #PID<0.95.0>
 
   """
-  @spec spawn((() -> any), spawn_opts) :: pid | {pid, reference}
+  @spec spawn((-> any), spawn_opts) :: pid | {pid, reference}
   defdelegate spawn(fun, opts), to: :erlang, as: :spawn_opt
 
   @doc """
@@ -477,6 +526,44 @@ defmodule Process do
   @spec monitor(pid | {name, node} | name) :: reference when name: atom
   def monitor(item) do
     :erlang.monitor(:process, item)
+  end
+
+  @doc """
+  Starts monitoring the given `item` from the calling process.
+
+  This function is similar to `monitor/1`, but accepts options to customize how
+  `item` is monitored. See `:erlang.monitor/3` for documentation on those
+  options.
+
+  Inlined by the compiler.
+
+  ## Examples
+
+      pid =
+        spawn(fn ->
+          receive do
+            {:ping, source_alias} -> send(source_alias, :pong)
+          end
+        end)
+      #=> #PID<0.118.0>
+
+      ref_and_alias = Process.monitor(pid, alias: :reply_demonitor)
+      #=> #Reference<0.906660723.3006791681.40191>
+
+      send(pid, {:ping, ref_and_alias})
+
+      receive do: msg -> msg
+      #=> :pong
+
+      receive do: msg -> msg
+      #=> {:DOWN, #Reference<0.906660723.3006791681.40191>, :process, #PID<0.118.0>, :noproc}
+
+  """
+  @doc since: "1.15.0"
+  @spec monitor(pid | {name, node} | name, [:erlang.monitor_option()]) :: reference
+        when name: atom
+  def monitor(item, options) do
+    :erlang.monitor(:process, item, options)
   end
 
   @doc """
@@ -650,7 +737,7 @@ defmodule Process do
   """
   @spec whereis(atom) :: pid | port | nil
   def whereis(name) do
-    nillify(:erlang.whereis(name))
+    nilify(:erlang.whereis(name))
   end
 
   @doc """
@@ -749,7 +836,7 @@ defmodule Process do
   """
   @spec info(pid) :: keyword | nil
   def info(pid) do
-    nillify(:erlang.process_info(pid))
+    nilify(:erlang.process_info(pid))
   end
 
   @doc """
@@ -770,7 +857,7 @@ defmodule Process do
   end
 
   def info(pid, spec) when is_atom(spec) or is_list(spec) do
-    nillify(:erlang.process_info(pid, spec))
+    nilify(:erlang.process_info(pid, spec))
   end
 
   @doc """
@@ -788,7 +875,72 @@ defmodule Process do
   @spec hibernate(module, atom, list) :: no_return
   defdelegate hibernate(mod, fun_name, args), to: :erlang
 
-  @compile {:inline, nillify: 1}
-  defp nillify(:undefined), do: nil
-  defp nillify(other), do: other
+  @type alias_opt :: :explicit_unalias | :reply
+
+  @typedoc """
+  An alias returned by `alias/0` or `alias/1`.
+
+  See [the module documentation](#module-aliases) for more information about aliases.
+  """
+  @type alias :: reference
+
+  @doc """
+  Creates a process alias.
+
+  This is the same as calling `alias/1` as `alias([:explicit_unalias])`. See
+  also `:erlang.alias/0`.
+
+  Inlined by the compiler.
+
+  ## Examples
+
+      alias = Process.alias()
+
+  """
+  @doc since: "1.15.0"
+  @spec alias() :: alias
+  defdelegate alias(), to: :erlang
+
+  @doc """
+  Creates a process alias.
+
+  See [the module documentation](#module-aliases) for more information about aliases.
+  See also `:erlang.alias/1`.
+
+  Inlined by the compiler.
+
+  ## Examples
+
+      alias = Process.alias([:reply])
+
+  """
+  @doc since: "1.15.0"
+  @spec alias([alias_opt]) :: alias
+  defdelegate alias(options), to: :erlang
+
+  @doc """
+  Explicitly deactivates a process alias.
+
+  Returns `true` if `alias` was a currently-active alias for current processes,
+  or `false` otherwise.
+
+  See [the module documentation](#module-aliases) for more information about aliases.
+  See also `:erlang.unalias/1`.
+
+  Inlined by the compiler.
+
+  ## Examples
+
+      alias = Process.alias()
+      Process.unalias(alias)
+      #=> true
+
+  """
+  @doc since: "1.15.0"
+  @spec unalias(alias) :: boolean
+  defdelegate unalias(alias), to: :erlang
+
+  @compile {:inline, nilify: 1}
+  defp nilify(:undefined), do: nil
+  defp nilify(other), do: other
 end

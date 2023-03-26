@@ -1,10 +1,8 @@
 -module(elixir_env).
 -include("elixir.hrl").
 -export([
-  new/0, to_caller/1, with_vars/2, reset_vars/1,
-  env_to_ex/1, env_to_erl/1,
-  reset_unused_vars/1, check_unused_vars/2,
-  merge_and_check_unused_vars/3,
+  new/0, to_caller/1, with_vars/2, reset_vars/1, env_to_ex/1, set_prematch_from_config/1,
+  reset_unused_vars/1, check_unused_vars/2, merge_and_check_unused_vars/3,
   trace/2, format_error/1,
   reset_read/2, prepare_write/1, close_write/2
 ]).
@@ -47,26 +45,16 @@ with_vars(Env, #{} = Vars) ->
 reset_vars(Env) ->
   Env#{versioned_vars := #{}}.
 
+set_prematch_from_config(#elixir_ex{} = S) ->
+  S#elixir_ex{prematch=elixir_config:get(on_undefined_variable)}.
+
 %% CONVERSIONS
 
 env_to_ex(#{context := match, versioned_vars := Vars}) ->
   Counter = map_size(Vars),
   #elixir_ex{prematch={Vars, Counter}, vars={Vars, false}, unused={#{}, Counter}};
 env_to_ex(#{versioned_vars := Vars}) ->
-  #elixir_ex{vars={Vars, false}, unused={#{}, map_size(Vars)}}.
-
-env_to_erl(#{context := Context, versioned_vars := Read}) ->
-  {VarsList, _Counter} = lists:mapfoldl(fun to_erl_var/2, 0, maps:values(Read)),
-  VarsMap = maps:from_list(VarsList),
-  Scope = #elixir_erl{
-    context=Context,
-    var_names=VarsMap,
-    counter=#{'_' => map_size(VarsMap)}
-  },
-  {VarsList, Scope}.
-
-to_erl_var(Version, Counter) ->
-  {{Version, list_to_atom("_@" ++ integer_to_list(Counter))}, Counter + 1}.
+  set_prematch_from_config(#elixir_ex{vars={Vars, false}, unused={#{}, map_size(Vars)}}).
 
 %% VAR HANDLING
 
@@ -97,8 +85,8 @@ reset_unused_vars(#elixir_ex{unused={_Unused, Version}} = S) ->
   S#elixir_ex{unused={#{}, Version}}.
 
 check_unused_vars(#elixir_ex{unused={Unused, _Version}}, E) ->
-  [elixir_errors:form_warn([{line, Line}], E, ?MODULE, {unused_var, Name, Overridden}) ||
-    {{Name, _}, {Line, Overridden}} <- maps:to_list(Unused), is_unused_var(Name)],
+  [elixir_errors:file_warn([{line, Line}], E, ?MODULE, {unused_var, Name, Overridden}) ||
+    {{{Name, nil}, _}, {Line, Overridden}} <- maps:to_list(Unused), is_unused_var(Name)],
   E.
 
 merge_and_check_unused_vars(S, #elixir_ex{vars={Read, Write}, unused={Unused, _Version}}, E) ->
@@ -108,23 +96,21 @@ merge_and_check_unused_vars(S, #elixir_ex{vars={Read, Write}, unused={Unused, _V
 
 merge_and_check_unused_vars(Current, Unused, ClauseUnused, E) ->
   maps:fold(fun
-    ({Name, Count} = Key, false, Acc) ->
-      Var = {Name, nil},
-
-      %% The parent knows it, so we have to propagate it was used up.
+    ({Var, Count} = Key, false, Acc) ->
       case Current of
         #{Var := CurrentCount} when Count =< CurrentCount ->
+          %% The parent knows it, so we have to propagate it was used up.
           Acc#{Key => false};
 
         #{} ->
           Acc
       end;
 
-    ({Name, _Count}, {Line, Overridden}, Acc) ->
-      case is_unused_var(Name) of
+    ({{Name, Kind}, _Count}, {Line, Overridden}, Acc) ->
+      case (Kind == nil) andalso is_unused_var(Name) of
         true ->
           Warn = {unused_var, Name, Overridden},
-          elixir_errors:form_warn([{line, Line}], E, ?MODULE, Warn);
+          elixir_errors:file_warn([{line, Line}], E, ?MODULE, Warn);
 
         false ->
           ok

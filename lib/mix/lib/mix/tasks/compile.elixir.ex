@@ -20,7 +20,7 @@ defmodule Mix.Tasks.Compile.Elixir do
   A module may export a `__mix_recompile__?/0` function that can
   cause the module to be recompiled using custom rules. For example,
   `@external_resource` already adds a compile-time dependency on an
-  external file, however to depend on a _dynamic_ list of files we
+  external file, however, to depend on a _dynamic_ list of files we
   can do:
 
       defmodule MyModule do
@@ -46,18 +46,19 @@ defmodule Mix.Tasks.Compile.Elixir do
 
   ## Command line options
 
-    * `--verbose` - prints each file being compiled
-    * `--force` - forces compilation regardless of modification times
     * `--docs` (`--no-docs`) - attaches (or not) documentation to compiled modules
     * `--debug-info` (`--no-debug-info`) - attaches (or not) debug info to compiled modules
+    * `--force` - forces compilation regardless of modification times
     * `--ignore-module-conflict` - does not emit warnings if a module was previously defined
-    * `--warnings-as-errors` - treats warnings in the current project as errors and
-      return a non-zero exit status
     * `--long-compilation-threshold N` - sets the "long compilation" threshold
       (in seconds) to `N` (see the docs for `Kernel.ParallelCompiler.compile/2`)
+    * `--purge-consolidation-path-if-stale PATH` - deletes and purges modules in the
+      given protocol consolidation path if compilation is required
     * `--profile` - if set to `time`, outputs timing information of compilation steps
-    * `--all-warnings` - prints warnings even from files that do not need to be recompiled
     * `--tracer` - adds a compiler tracer in addition to any specified in the `mix.exs` file
+    * `--verbose` - prints each file being compiled
+    * `--warnings-as-errors` - treats warnings in the current project as errors and
+      return a non-zero exit status
 
   ## Configuration
 
@@ -83,6 +84,7 @@ defmodule Mix.Tasks.Compile.Elixir do
     debug_info: :boolean,
     verbose: :boolean,
     long_compilation_threshold: :integer,
+    purge_consolidation_path_if_stale: :string,
     profile: :string,
     all_warnings: :boolean,
     tracer: :keep
@@ -103,7 +105,7 @@ defmodule Mix.Tasks.Compile.Elixir do
 
     manifest = manifest()
     base = xref_exclude_opts(project[:elixirc_options] || [], project)
-    cache_key = {base, srcs}
+    cache_key = {base, srcs, File.cwd!(), "--no-optional-deps" in args}
 
     opts =
       base
@@ -111,15 +113,20 @@ defmodule Mix.Tasks.Compile.Elixir do
       |> tracers_opts(tracers)
       |> profile_opts()
 
-    Mix.Compilers.Elixir.compile(
-      manifest,
-      srcs,
-      dest,
-      cache_key,
-      Mix.Tasks.Compile.Erlang.manifests(),
-      Mix.Tasks.Compile.Erlang.modules(),
-      opts
-    )
+    # Having compilations racing with other is most undesired,
+    # so we wrap the compiler in a lock. Ideally we would use
+    # flock in the future.
+    Mix.State.lock(__MODULE__, fn ->
+      Mix.Compilers.Elixir.compile(
+        manifest,
+        srcs,
+        dest,
+        cache_key,
+        Mix.Tasks.Compile.Erlang.manifests(),
+        Mix.Tasks.Compile.Erlang.modules(),
+        opts
+      )
+    end)
   end
 
   @impl true

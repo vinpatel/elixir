@@ -37,6 +37,7 @@ defmodule DateTime do
   Other time zone databases can also be configured. Here are some
   available options and libraries:
 
+    * [`time_zone_info`](https://github.com/hrzndhrn/time_zone_info)
     * [`tz`](https://github.com/mathieuprog/tz)
     * [`tzdata`](https://github.com/lau/tzdata)
     * [`zoneinfo`](https://github.com/smartrent/zoneinfo) -
@@ -142,6 +143,9 @@ defmodule DateTime do
 
   @doc """
   Returns the current datetime in UTC.
+
+  If you want the current time in Unix seconds,
+  use `System.os_time/1` instead.
 
   ## Examples
 
@@ -814,10 +818,6 @@ defmodule DateTime do
   It will return the integer with the given unit,
   according to `System.convert_time_unit/3`.
 
-  If you want to get the current time in Unix seconds,
-  do not do `DateTime.utc_now() |> DateTime.to_unix()`.
-  Simply call `System.os_time(:second)` instead.
-
   ## Examples
 
       iex> 1_464_096_368 |> DateTime.from_unix!() |> DateTime.to_unix()
@@ -1120,6 +1120,10 @@ defmodule DateTime do
       iex> datetime
       ~U[-2015-01-23 21:20:07.123Z]
 
+      iex> {:ok, datetime, 9000} = DateTime.from_iso8601("20150123T235007.123+0230", :basic)
+      iex> datetime
+      ~U[2015-01-23 21:20:07.123Z]
+
       iex> DateTime.from_iso8601("2015-01-23P23:50:07")
       {:error, :invalid_format}
       iex> DateTime.from_iso8601("2015-01-23T23:50:07")
@@ -1133,11 +1137,39 @@ defmodule DateTime do
 
   """
   @doc since: "1.4.0"
-  @spec from_iso8601(String.t(), Calendar.calendar()) ::
+  @spec from_iso8601(String.t(), Calendar.calendar() | :extended | :basic) ::
           {:ok, t, Calendar.utc_offset()} | {:error, atom}
-  def from_iso8601(string, calendar \\ Calendar.ISO) do
+  def from_iso8601(string, format_or_calendar \\ Calendar.ISO)
+
+  def from_iso8601(string, format) when format in [:basic, :extended] do
+    from_iso8601(string, Calendar.ISO, format)
+  end
+
+  def from_iso8601(string, calendar) when is_atom(calendar) do
+    from_iso8601(string, calendar, :extended)
+  end
+
+  @doc """
+  Converts to ISO8601 specifying both a calendar and a mode.
+
+  See `from_iso8601/2` for more information.
+
+  ## Examples
+
+      iex> {:ok, datetime, 9000} = DateTime.from_iso8601("2015-01-23T23:50:07,123+02:30", Calendar.ISO, :extended)
+      iex> datetime
+      ~U[2015-01-23 21:20:07.123Z]
+
+      iex> {:ok, datetime, 9000} = DateTime.from_iso8601("20150123T235007.123+0230", Calendar.ISO, :basic)
+      iex> datetime
+      ~U[2015-01-23 21:20:07.123Z]
+
+  """
+  @spec from_iso8601(String.t(), Calendar.calendar(), :extended | :basic) ::
+          {:ok, t, Calendar.utc_offset()} | {:error, atom}
+  def from_iso8601(string, calendar, format) do
     with {:ok, {year, month, day, hour, minute, second, microsecond}, offset} <-
-           Calendar.ISO.parse_utc_datetime(string) do
+           Calendar.ISO.parse_utc_datetime(string, format) do
       datetime = %DateTime{
         year: year,
         month: month,
@@ -1356,14 +1388,51 @@ defmodule DateTime do
   end
 
   @doc """
+  Returns true if the first datetime is strictly earlier than the second.
+
+  ## Examples
+
+      iex> DateTime.before?(~U[2021-01-01 11:00:00Z], ~U[2022-02-02 11:00:00Z])
+      true
+      iex> DateTime.before?(~U[2021-01-01 11:00:00Z], ~U[2021-01-01 11:00:00Z])
+      false
+      iex> DateTime.before?(~U[2022-02-02 11:00:00Z], ~U[2021-01-01 11:00:00Z])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec before?(Calendar.datetime(), Calendar.datetime()) :: boolean()
+  def before?(datetime1, datetime2) do
+    compare(datetime1, datetime2) == :lt
+  end
+
+  @doc """
+  Returns true if the first datetime is strictly later than the second.
+
+  ## Examples
+
+      iex> DateTime.after?(~U[2022-02-02 11:00:00Z], ~U[2021-01-01 11:00:00Z])
+      true
+      iex> DateTime.after?(~U[2021-01-01 11:00:00Z], ~U[2021-01-01 11:00:00Z])
+      false
+      iex> DateTime.after?(~U[2021-01-01 11:00:00Z], ~U[2022-02-02 11:00:00Z])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec after?(Calendar.datetime(), Calendar.datetime()) :: boolean()
+  def after?(datetime1, datetime2) do
+    compare(datetime1, datetime2) == :gt
+  end
+
+  @doc """
   Subtracts `datetime2` from `datetime1`.
 
-  The answer can be returned in any `unit` available from `t:System.time_unit/0`.
+  The answer can be returned in any `:day`, `:hour`, `:minute`, or any `unit`
+  available from `t:System.time_unit/0`. The unit is measured according to
+  `Calendar.ISO` and defaults to `:second`.
 
-  Leap seconds are not taken into account.
-
-  This function returns the difference in seconds where seconds are measured
-  according to `Calendar.ISO`.
+  Fractional results are not supported and are truncated.
 
   ## Examples
 
@@ -1377,14 +1446,36 @@ defmodule DateTime do
       18000
       iex> DateTime.diff(dt2, dt1)
       -18000
+      iex> DateTime.diff(dt1, dt2, :hour)
+      5
+      iex> DateTime.diff(dt2, dt1, :hour)
+      -5
 
   """
   @doc since: "1.5.0"
-  @spec diff(Calendar.datetime(), Calendar.datetime(), System.time_unit()) :: integer()
+  @spec diff(
+          Calendar.datetime(),
+          Calendar.datetime(),
+          :day | :hour | :minute | System.time_unit()
+        ) :: integer()
+  def diff(datetime1, datetime2, unit \\ :second)
+
+  def diff(datetime1, datetime2, :day) do
+    diff(datetime1, datetime2, :second) |> div(86400)
+  end
+
+  def diff(datetime1, datetime2, :hour) do
+    diff(datetime1, datetime2, :second) |> div(3600)
+  end
+
+  def diff(datetime1, datetime2, :minute) do
+    diff(datetime1, datetime2, :second) |> div(60)
+  end
+
   def diff(
         %{utc_offset: utc_offset1, std_offset: std_offset1} = datetime1,
         %{utc_offset: utc_offset2, std_offset: std_offset2} = datetime2,
-        unit \\ :second
+        unit
       ) do
     naive_diff =
       (datetime1 |> to_iso_days() |> Calendar.ISO.iso_days_to_unit(unit)) -
@@ -1397,15 +1488,30 @@ defmodule DateTime do
   @doc """
   Adds a specified amount of time to a `DateTime`.
 
-  Accepts an `amount_to_add` in any `unit` available from `t:System.time_unit/0`.
-  Negative values will move backwards in time.
+  Accepts an `amount_to_add` in any `unit`. `unit` can be `:day`,
+  `:hour`, `:minute`, `:second` or any subsecond precision from
+  `t:System.time_unit/0`. It defaults to `:second`. Negative values
+  will move backwards in time.
 
-  Takes changes such as summer time/DST into account. This means that adding time
-  can cause the wall time to "go backwards" during "fall back" during autumn.
-  Adding just a few seconds to a datetime just before "spring forward" can cause wall
-  time to increase by more than an hour.
+  This function always consider the unit to be computed according
+  to the `Calendar.ISO`.
 
-  Fractional second precision stays the same in a similar way to `NaiveDateTime.add/2`.
+  This function uses relies on a contiguous representation of time,
+  ignoring the wall time and timezone changes. For example, if you add
+  one day when there are summer time/daylight saving time changes,
+  it will also change the time forward or backward by one hour,
+  so the elapsed time is precisely 24 hours. Similarly, adding just
+  a few seconds to a datetime just before "spring forward" can cause
+  wall time to increase by more than an hour.
+
+  While this means this function is precise in terms of elapsed time,
+  its result may be misleading in certain use cases. For example, if a
+  user requests a meeting to happen every day at 15:00 and you use this
+  function to compute all future meetings by adding day after day, this
+  function may change the meeting time to 14:00 or 16:00 if there are
+  changes to the current timezone. Computing of recurring datetimes is
+  not currently supported in Elixir's standard library but it is available
+  by third-party libraries.
 
   ### Examples
 
@@ -1416,15 +1522,33 @@ defmodule DateTime do
       iex> DateTime.add(~U[2018-11-15 10:00:00Z], 3600, :second)
       ~U[2018-11-15 11:00:00Z]
 
-  When adding 3 seconds just before "spring forward" we go from 1:59:59 to 3:00:02
+  When adding 3 seconds just before "spring forward" we go from 1:59:59 to 3:00:02:
 
       iex> dt = DateTime.from_naive!(~N[2019-03-31 01:59:59.123], "Europe/Copenhagen", FakeTimeZoneDatabase)
       iex> dt |> DateTime.add(3, :second, FakeTimeZoneDatabase)
       #DateTime<2019-03-31 03:00:02.123+02:00 CEST Europe/Copenhagen>
 
+  When adding 1 day during "spring forward", the hour also changes:
+
+      iex> dt = DateTime.from_naive!(~N[2019-03-31 01:00:00], "Europe/Copenhagen", FakeTimeZoneDatabase)
+      iex> dt |> DateTime.add(1, :day, FakeTimeZoneDatabase)
+      #DateTime<2019-04-01 02:00:00+02:00 CEST Europe/Copenhagen>
+
+  This operation merges the precision of the naive date time with the given unit:
+
+      iex> result = DateTime.add(~U[2014-10-02 00:29:10Z], 21, :millisecond)
+      ~U[2014-10-02 00:29:10.021Z]
+      iex> result.microsecond
+      {21000, 3}
+
   """
   @doc since: "1.8.0"
-  @spec add(Calendar.datetime(), integer, System.time_unit(), Calendar.time_zone_database()) ::
+  @spec add(
+          Calendar.datetime(),
+          integer,
+          :day | :hour | :minute | System.time_unit(),
+          Calendar.time_zone_database()
+        ) ::
           t()
   def add(
         datetime,
@@ -1432,7 +1556,20 @@ defmodule DateTime do
         unit \\ :second,
         time_zone_database \\ Calendar.get_time_zone_database()
       )
-      when is_integer(amount_to_add) do
+
+  def add(datetime, amount_to_add, :day, time_zone_database) when is_integer(amount_to_add) do
+    add(datetime, amount_to_add * 86400, :second, time_zone_database)
+  end
+
+  def add(datetime, amount_to_add, :hour, time_zone_database) when is_integer(amount_to_add) do
+    add(datetime, amount_to_add * 3600, :second, time_zone_database)
+  end
+
+  def add(datetime, amount_to_add, :minute, time_zone_database) when is_integer(amount_to_add) do
+    add(datetime, amount_to_add * 60, :second, time_zone_database)
+  end
+
+  def add(datetime, amount_to_add, unit, time_zone_database) when is_integer(amount_to_add) do
     %{
       utc_offset: utc_offset,
       std_offset: std_offset,
@@ -1440,8 +1577,15 @@ defmodule DateTime do
       microsecond: {_, precision}
     } = datetime
 
+    if not is_integer(unit) and
+         unit not in ~w(second millisecond microsecond nanosecond)a do
+      raise ArgumentError,
+            "unsupported time unit. Expected :day, :hour, :minute, :second, :millisecond, :microsecond, :nanosecond, or a positive integer, got #{inspect(unit)}"
+    end
+
     ppd = System.convert_time_unit(86400, :second, unit)
     total_offset = System.convert_time_unit(utc_offset + std_offset, :second, unit)
+    precision = max(Calendar.ISO.time_unit_to_precision(unit), precision)
 
     result =
       datetime

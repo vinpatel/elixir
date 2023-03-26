@@ -77,13 +77,14 @@ defmodule Task do
       end)
       |> Task.await()
 
-  We encourage developers to rely on supervised tasks as much as
-  possible. Supervised tasks enable a huge variety of patterns
-  that allow you explicit control on how to handle the results,
-  errors, and timeouts. Here is a summary:
+  We encourage developers to rely on supervised tasks as much as possible.
+  Supervised tasks improve the visibility of how many tasks are running
+  at a given moment and enable a variety of patterns that give you
+  explicit control on how to handle the results, errors, and timeouts.
+  Here is a summary:
 
     * Using `Task.Supervisor.start_child/2` allows you to start a fire-and-forget
-      task that you don't care about its results or if it completes successfully or not.
+      task when you don't care about its results or if it completes successfully or not.
 
     * Using `Task.Supervisor.async/2` + `Task.await/2` allows you to execute
       tasks concurrently and retrieve its result. If the task fails,
@@ -95,14 +96,15 @@ defmodule Task do
       the caller won't fail. You will receive the error reason either on
       `yield` or `shutdown`.
 
-  See the `Task.Supervisor` module for details on the supported operations.
+  Furthermore, the supervisor guarantees all tasks terminate within a
+  configurable shutdown period when your application shuts down. See the
+  `Task.Supervisor` module for details on the supported operations.
 
   ### Distributed tasks
 
-  Since Elixir provides a `Task.Supervisor`, it is easy to use one
-  to dynamically start tasks across nodes:
+  With `Task.Supervisor`, it is easy to dynamically start tasks across nodes:
 
-      # On the remote node
+      # On the remote node named :remote@local
       Task.Supervisor.start_link(name: MyApp.DistSupervisor)
 
       # On the client
@@ -130,7 +132,7 @@ defmodule Task do
 
   This is often useful when you need to execute some steps while
   setting up your supervision tree. For example: to warm up caches,
-  log the initialization status, etc.
+  log the initialization status, and such.
 
   If you don't want to put the Task code directly under the `Supervisor`,
   you can wrap the `Task` in its own module, similar to how you would
@@ -193,7 +195,7 @@ defmodule Task do
   This provides more visibility and allows you to control how those tasks are
   terminated when a node shuts down. That might look something like
   `Task.Supervisor.start_child(MySupervisor, task_function)`. This means
-  that, although your code is the one who invokes the task, the actual ancestor of
+  that, although your code is the one invoking the task, the actual ancestor of
   the task is the supervisor, as the supervisor is the one effectively starting it.
 
   To track the relationship between your code and the task, we use the `$callers`
@@ -210,7 +212,7 @@ defmodule Task do
 
   The list of callers of the current process can be retrieved from the Process
   dictionary with `Process.get(:"$callers")`. This will return either `nil` or
-  a list `[pid_n, ..., pid2, pid1]` with at least one entry Where `pid_n` is
+  a list `[pid_n, ..., pid2, pid1]` with at least one entry where `pid_n` is
   the PID that called the current process, `pid2` called `pid_n`, and `pid2` was
   called by `pid1`.
 
@@ -223,27 +225,36 @@ defmodule Task do
 
   It contains these fields:
 
-    * `:pid` - the PID of the task process; `nil` if the task does
-      not use a task process
-
-    * `:ref` - the task monitor reference
+    * `:mfa` - a three-element tuple containing the module, function name,
+      and arity invoked to start the task in `async/1` and `async/3`
 
     * `:owner` - the PID of the process that started the task
 
+    * `:pid` - the PID of the task process; `nil` if there is no process
+      specifically assigned for the task
+
+    * `:ref` - an opaque term used as the task monitor reference
+
   """
-  @enforce_keys [:pid, :ref, :owner]
-  defstruct pid: nil, ref: nil, owner: nil
+  @enforce_keys [:mfa, :owner, :pid, :ref]
+  defstruct @enforce_keys
 
   @typedoc """
   The Task type.
 
-  See `%Task{}` for information about each field of the structure.
+  See [`%Task{}`](`__struct__/0`) for information about each field of the structure.
   """
   @type t :: %__MODULE__{
+          mfa: mfa(),
+          owner: pid(),
           pid: pid() | nil,
-          ref: reference(),
-          owner: pid()
+          ref: ref()
         }
+
+  @typedoc """
+  The task opaque reference.
+  """
+  @opaque ref :: reference()
 
   defguardp is_timeout(timeout)
             when timeout == :infinity or (is_integer(timeout) and timeout >= 0)
@@ -303,7 +314,7 @@ defmodule Task do
 
   This is used to start a statically supervised task under a supervision tree.
   """
-  @spec start_link((() -> any)) :: {:ok, pid}
+  @spec start_link((-> any)) :: {:ok, pid}
   def start_link(fun) when is_function(fun, 0) do
     start_link(:erlang, :apply, [fun, []])
   end
@@ -335,7 +346,7 @@ defmodule Task do
   to use `Task.Supervisor.start_child/2` instead, which allows
   you to control the shutdown time via the `:shutdown` option.
   """
-  @spec start((() -> any)) :: {:ok, pid}
+  @spec start((-> any)) :: {:ok, pid}
   def start(fun) when is_function(fun, 0) do
     start(:erlang, :apply, [fun, []])
   end
@@ -365,8 +376,14 @@ defmodule Task do
   `fun` must be a zero-arity anonymous function. This function
   spawns a process that is linked to and monitored by the caller
   process. A `Task` struct is returned containing the relevant
-  information. Developers must eventually call `Task.await/2` or
-  `Task.yield/2` followed by `Task.shutdown/2` on the returned task.
+  information.
+
+  If you start an `async`, you **must await**. This is either done
+  by calling `Task.await/2` or `Task.yield/2` followed by
+  `Task.shutdown/2` on the returned task. Alternatively, if you
+  spawn a task inside a `GenServer`, then the `GenServer` will
+  automatically await for you and call `c:GenServer.handle_info/2`
+  with the task response and associated `:DOWN` message.
 
   Read the `Task` module documentation for more information about
   the general usage of async tasks.
@@ -418,38 +435,37 @@ defmodule Task do
       to any supervisor, you may leave dangling tasks in case
       the caller process dies.
 
+  ## Metadata
+
+  The task created with this function stores `:erlang.apply/2` in
+  its `:mfa` metadata field, which is used internally to apply
+  the anonymous function. Use `async/3` if you want another function
+  to be used as metadata.
   """
-  @spec async((() -> any)) :: t
+  @spec async((-> any)) :: t
   def async(fun) when is_function(fun, 0) do
     async(:erlang, :apply, [fun, []])
   end
-
-  # TODO: Remove conditional on Erlang/OTP 24
-  @compile {:no_warn_undefined, {:erlang, :monitor, 3}}
 
   @doc """
   Starts a task that must be awaited on.
 
   Similar to `async/1` except the function to be started is
   specified by the given `module`, `function_name`, and `args`.
+  The `module`, `function_name`, and its arity are stored as
+  a tuple in the `:mfa` field for reflection purposes.
   """
   @spec async(module, atom, [term]) :: t
   def async(module, function_name, args)
       when is_atom(module) and is_atom(function_name) and is_list(args) do
-    mfa = {module, function_name, args}
+    mfargs = {module, function_name, args}
     owner = self()
+    # No need to monitor because the processes are linked
     {:ok, pid} = Task.Supervised.start_link(get_owner(owner), :nomonitor)
 
-    {reply_to, ref} =
-      if function_exported?(:erlang, :monitor, 3) do
-        ref = :erlang.monitor(:process, pid, alias: :demonitor)
-        {ref, ref}
-      else
-        {owner, Process.monitor(pid)}
-      end
-
-    send(pid, {owner, ref, reply_to, get_callers(owner), mfa})
-    %Task{pid: pid, ref: ref, owner: owner}
+    alias = build_alias(pid)
+    send(pid, {owner, alias, alias, get_callers(owner), mfargs})
+    %Task{pid: pid, ref: alias, owner: owner, mfa: {module, function_name, length(args)}}
   end
 
   @doc """
@@ -492,7 +508,7 @@ defmodule Task do
     # "complete" the task immediately
     send(owner, {ref, result})
 
-    %Task{pid: nil, ref: ref, owner: owner}
+    %Task{pid: nil, ref: ref, owner: owner, mfa: {Task, :completed, 1}}
   end
 
   @doc """
@@ -507,7 +523,9 @@ defmodule Task do
 
   When streamed, each task will emit `{:ok, value}` upon successful
   completion or `{:exit, reason}` if the caller is trapping exits.
-  The order of results depends on the value of the `:ordered` option.
+  It's possible to have `{:exit, {element, reason}}` for exits
+  using the `:zip_input_on_exit` option. The order of results depends
+  on the value of the `:ordered` option.
 
   The level of concurrency and the time tasks are allowed to run can
   be controlled via options (see the "Options" section below).
@@ -540,6 +558,11 @@ defmodule Task do
       * `:exit` (default) - the caller (the process that spawned the tasks) exits.
       * `:kill_task` - the task that timed out is killed. The value
         emitted for that task is `{:exit, :timeout}`.
+
+    * `:zip_input_on_exit` - (since v1.14.0) adds the original
+      input to `:exit` tuples. The value emitted for that task is
+      `{:exit, {input, reason}}`, where `input` is the collection element
+      that caused an exited during processing. Defaults to `false`.
 
   ## Example
 
@@ -661,6 +684,7 @@ defmodule Task do
       owner = get_owner(self())
 
       Task.Supervised.stream(enumerable, acc, acc_fun, get_callers(self()), fun, options, fn ->
+        # No need to monitor because the processes are linked
         {:ok, pid} = Task.Supervised.start_link(owner, :nomonitor)
         {:ok, :link, pid}
       end)
@@ -763,7 +787,7 @@ defmodule Task do
 
         # If the task succeeds...
         def handle_info({ref, result}, state) do
-          # The task succeed so we can cancel the monitoring and discard the DOWN message
+          # The task succeed so we can demonitor its reference
           Process.demonitor(ref, [:flush])
 
           {url, state} = pop_in(state.tasks[ref])
@@ -796,16 +820,20 @@ defmodule Task do
       raise ArgumentError, invalid_owner_error(task)
     end
 
+    await_receive(ref, task, timeout)
+  end
+
+  defp await_receive(ref, task, timeout) do
     receive do
       {^ref, reply} ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         reply
 
       {:DOWN, ^ref, _, proc, reason} ->
         exit({reason(reason, proc), {__MODULE__, :await, [task, timeout]}})
     after
       timeout ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         exit({:timeout, {__MODULE__, :await, [task, timeout]}})
     end
   end
@@ -819,26 +847,25 @@ defmodule Task do
   Returns `{:ok, reply}` if the reply is received before ignoring the task,
   `{:exit, reason}` if the task died before ignoring it, otherwise `nil`.
 
-  Important: avoid using `Task.async` and then immediately ignoring
+  Important: avoid using [`Task.async/1,3`](`async/1`) and then immediately ignoring
   the task. If you want to start tasks you don't care about their
   results, use `Task.Supervisor.start_child/2` instead.
-
-  Requires Erlang/OTP 24+.
   """
   @doc since: "1.13.0"
+  @spec ignore(t) :: {:ok, term} | {:exit, term} | nil
   def ignore(%Task{ref: ref, pid: pid, owner: owner} = task) do
-    unless function_exported?(:erlang, :monitor, 3) do
-      raise "Task.ignore/1 requires Erlang/OTP 24+"
-    end
-
     if owner != self() do
       raise ArgumentError, invalid_owner_error(task)
     end
 
+    ignore_receive(ref, pid, task)
+  end
+
+  defp ignore_receive(ref, pid, task) do
     receive do
       {^ref, reply} ->
-        Process.unlink(pid)
-        Process.demonitor(ref, [:flush])
+        pid && Process.unlink(pid)
+        demonitor(ref)
         {:ok, reply}
 
       {:DOWN, ^ref, _, proc, :noconnection} ->
@@ -848,8 +875,8 @@ defmodule Task do
         {:exit, reason}
     after
       0 ->
-        Process.unlink(pid)
-        Process.demonitor(ref, [:flush])
+        pid && Process.unlink(pid)
+        demonitor(ref)
         nil
     end
   end
@@ -898,15 +925,13 @@ defmodule Task do
   @spec await_many([t], timeout) :: [term]
   def await_many(tasks, timeout \\ 5000) when is_timeout(timeout) do
     awaiting =
-      for task <- tasks, into: %{} do
-        %Task{ref: ref, owner: owner} = task
-
+      Map.new(tasks, fn %Task{ref: ref, owner: owner} = task ->
         if owner != self() do
           raise ArgumentError, invalid_owner_error(task)
         end
 
         {ref, true}
-      end
+      end)
 
     timeout_ref = make_ref()
 
@@ -939,7 +964,7 @@ defmodule Task do
         exit({reason(reason, proc), {__MODULE__, :await_many, [tasks, timeout]}})
 
       {ref, reply} when is_map_key(awaiting, ref) ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
 
         await_many(
           tasks,
@@ -953,7 +978,7 @@ defmodule Task do
 
   defp demonitor_pending_tasks(awaiting) do
     Enum.each(awaiting, fn {ref, _} ->
-      Process.demonitor(ref, [:flush])
+      demonitor(ref)
     end)
   end
 
@@ -962,7 +987,7 @@ defmodule Task do
   def find(tasks, {ref, reply}) when is_reference(ref) do
     Enum.find_value(tasks, fn
       %Task{ref: ^ref} = task ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         {reply, task}
 
       %Task{} ->
@@ -1014,7 +1039,7 @@ defmodule Task do
           result
 
         nil ->
-          Logger.warn("Failed to get a result in #{timeout}ms")
+          Logger.warning("Failed to get a result in #{timeout}ms")
           nil
       end
 
@@ -1026,7 +1051,7 @@ defmodule Task do
           result
 
         nil ->
-          Logger.warn("Failed to get a result in #{timeout}ms")
+          Logger.warning("Failed to get a result in #{timeout}ms")
           nil
       end
 
@@ -1040,9 +1065,13 @@ defmodule Task do
       raise ArgumentError, invalid_owner_error(task)
     end
 
+    yield_receive(ref, task, timeout)
+  end
+
+  defp yield_receive(ref, task, timeout) do
     receive do
       {^ref, reply} ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         {:ok, reply}
 
       {:DOWN, ^ref, _, proc, :noconnection} ->
@@ -1073,9 +1102,6 @@ defmodule Task do
     * `{:exit, reason}` if the task has died
     * `nil` if the task keeps running past the timeout
 
-  A timeout, in milliseconds or `:infinity`, can be given with a default value
-  of `5000`.
-
   Check `yield/2` for more information.
 
   ## Example
@@ -1096,7 +1122,7 @@ defmodule Task do
           end)
         end
 
-      tasks_with_results = Task.yield_many(tasks, 5000)
+      tasks_with_results = Task.yield_many(tasks, timeout: 5000)
 
       results =
         Enum.map(tasks_with_results, fn {task, res} ->
@@ -1116,9 +1142,49 @@ defmodule Task do
   printed, as those were the tasks that have replied in the
   given time. All other tasks will have been shut down using
   the `Task.shutdown/2` call.
+
+  As a convenience, you can achieve a similar behaviour to above
+  by specifying the `:on_timeout` option to be `:kill_task` (or
+  `:ignore`). See `Task.await_many/2` if you would rather exit
+  the caller process on timeout.
+
+  ## Options
+
+  The second argument is either a timeout or options, which defaults
+  to this:
+
+    * `:timeout` - the maximum amount of time (in milliseconds or `:infinity`)
+      each task is allowed to execute for. Defaults to `5000`.
+
+    * `:on_timeout` - what to do when a task times out. The possible
+      values are:
+      * `:nothing` - do nothing (default). The tasks can still be
+        awaited on, yielded on, ignored, or shut down later.
+      * `:ignore` - the results of the task will be ignored.
+      * `:kill_task` - the task that timed out is killed.
   """
   @spec yield_many([t], timeout) :: [{t, {:ok, term} | {:exit, term} | nil}]
-  def yield_many(tasks, timeout \\ 5000) when is_timeout(timeout) do
+  @spec yield_many([t], timeout: timeout, on_timeout: :nothing | :ignore | :kill_task) ::
+          [{t, {:ok, term} | {:exit, term} | nil}]
+  def yield_many(tasks, opts \\ [])
+
+  def yield_many(tasks, timeout) when is_timeout(timeout) do
+    yield_many(tasks, timeout: timeout)
+  end
+
+  def yield_many(tasks, opts) when is_list(opts) do
+    on_timeout = Keyword.get(opts, :on_timeout, :nothing)
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    refs =
+      Map.new(tasks, fn %Task{ref: ref, owner: owner} = task ->
+        if owner != self() do
+          raise ArgumentError, invalid_owner_error(task)
+        end
+
+        {ref, nil}
+      end)
+
     timeout_ref = make_ref()
 
     timer_ref =
@@ -1127,42 +1193,49 @@ defmodule Task do
       end
 
     try do
-      yield_many(tasks, timeout_ref, :infinity)
+      yield_many(map_size(refs), refs, timeout_ref, timer_ref)
     catch
       {:noconnection, reason} ->
         exit({reason, {__MODULE__, :yield_many, [tasks, timeout]}})
-    after
-      timer_ref && Process.cancel_timer(timer_ref)
-      receive do: (^timeout_ref -> :ok), after: (0 -> :ok)
+    else
+      refs ->
+        for task <- tasks do
+          value =
+            with nil <- Map.fetch!(refs, task.ref) do
+              case on_timeout do
+                :nothing -> nil
+                :kill_task -> shutdown(task, :brutal_kill)
+                :ignore -> ignore(task)
+              end
+            end
+
+          {task, value}
+        end
     end
   end
 
-  defp yield_many([%Task{ref: ref, owner: owner} = task | rest], timeout_ref, timeout) do
-    if owner != self() do
-      raise ArgumentError, invalid_owner_error(task)
-    end
+  defp yield_many(0, refs, timeout_ref, timer_ref) do
+    timer_ref && Process.cancel_timer(timer_ref)
+    receive do: (^timeout_ref -> :ok), after: (0 -> :ok)
+    refs
+  end
 
+  defp yield_many(limit, refs, timeout_ref, timer_ref) do
     receive do
-      {^ref, reply} ->
-        Process.demonitor(ref, [:flush])
-        [{task, {:ok, reply}} | yield_many(rest, timeout_ref, timeout)]
+      {ref, reply} when is_map_key(refs, ref) ->
+        demonitor(ref)
+        yield_many(limit - 1, %{refs | ref => {:ok, reply}}, timeout_ref, timer_ref)
 
-      {:DOWN, ^ref, _, proc, :noconnection} ->
-        throw({:noconnection, reason(:noconnection, proc)})
-
-      {:DOWN, ^ref, _, _, reason} ->
-        [{task, {:exit, reason}} | yield_many(rest, timeout_ref, timeout)]
+      {:DOWN, ref, _, proc, reason} when is_map_key(refs, ref) ->
+        if reason == :noconnection do
+          throw({:noconnection, reason(:noconnection, proc)})
+        else
+          yield_many(limit - 1, %{refs | ref => {:exit, reason}}, timeout_ref, timer_ref)
+        end
 
       ^timeout_ref ->
-        [{task, nil} | yield_many(rest, timeout_ref, 0)]
-    after
-      timeout ->
-        [{task, nil} | yield_many(rest, timeout_ref, 0)]
+        refs
     end
-  end
-
-  defp yield_many([], _timeout_ref, _timeout) do
-    []
   end
 
   @doc """
@@ -1185,6 +1258,10 @@ defmodule Task do
   `:shutdown` to shut down all of its linked processes, including tasks, that
   are not trapping exits without generating any log messages.
 
+  If there is no process linked to the task, such as tasks started by
+  `Task.completed/1`, we check for a response or error accordingly, but without
+  shutting a process down.
+
   If a task's monitor has already been demonitored or received and there is not
   a response waiting in the message queue this function will return
   `{:exit, :noproc}` as the result or exit reason can not be determined.
@@ -1193,18 +1270,18 @@ defmodule Task do
   def shutdown(task, shutdown \\ 5000)
 
   def shutdown(%Task{pid: nil} = task, _) do
-    raise ArgumentError, "task #{inspect(task)} does not have an associated task process"
+    ignore(task)
   end
 
   def shutdown(%Task{owner: owner} = task, _) when owner != self() do
     raise ArgumentError, invalid_owner_error(task)
   end
 
-  def shutdown(%Task{pid: pid} = task, :brutal_kill) do
-    mon = Process.monitor(pid)
-    exit(pid, :kill)
+  def shutdown(%Task{pid: pid, ref: ref} = task, :brutal_kill) do
+    mon = build_monitor(pid)
+    shutdown_send(pid, :kill)
 
-    case shutdown_receive(task, mon, :brutal_kill, :infinity) do
+    case shutdown_receive(ref, mon, task, :brutal_kill, :infinity) do
       {:down, proc, :noconnection} ->
         exit({reason(:noconnection, proc), {__MODULE__, :shutdown, [task, :brutal_kill]}})
 
@@ -1216,11 +1293,11 @@ defmodule Task do
     end
   end
 
-  def shutdown(%Task{pid: pid} = task, timeout) when is_timeout(timeout) do
-    mon = Process.monitor(pid)
-    exit(pid, :shutdown)
+  def shutdown(%Task{pid: pid, ref: ref} = task, timeout) when is_timeout(timeout) do
+    mon = build_monitor(pid)
+    shutdown_send(pid, :shutdown)
 
-    case shutdown_receive(task, mon, :shutdown, timeout) do
+    case shutdown_receive(ref, mon, task, :shutdown, timeout) do
       {:down, proc, :noconnection} ->
         exit({reason(:noconnection, proc), {__MODULE__, :shutdown, [task, timeout]}})
 
@@ -1232,27 +1309,19 @@ defmodule Task do
     end
   end
 
-  ## Helpers
-
-  defp reason(:noconnection, proc), do: {:nodedown, monitor_node(proc)}
-  defp reason(reason, _), do: reason
-
-  defp monitor_node(pid) when is_pid(pid), do: node(pid)
-  defp monitor_node({_, node}), do: node
-
-  # spawn a process to ensure task gets exit signal if process dies from exit signal
-  # between unlink and exit.
-  defp exit(task, reason) do
+  # Spawn a process to ensure task gets exit signal
+  # if process dies from exit signal between unlink and exit.
+  defp shutdown_send(pid, reason) do
     caller = self()
     ref = make_ref()
-    enforcer = spawn(fn -> enforce_exit(task, reason, caller, ref) end)
-    Process.unlink(task)
-    Process.exit(task, reason)
+    enforcer = spawn(fn -> shutdown_send(pid, reason, caller, ref) end)
+    Process.unlink(pid)
+    Process.exit(pid, reason)
     send(enforcer, {:done, ref})
     :ok
   end
 
-  defp enforce_exit(pid, reason, caller, ref) do
+  defp shutdown_send(pid, reason, caller, ref) do
     mon = Process.monitor(caller)
 
     receive do
@@ -1261,14 +1330,14 @@ defmodule Task do
     end
   end
 
-  defp shutdown_receive(%{ref: ref} = task, mon, type, timeout) do
+  defp shutdown_receive(ref, mon, task, type, timeout) do
     receive do
       {:DOWN, ^mon, _, _, :shutdown} when type in [:shutdown, :timeout_kill] ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         flush_reply(ref)
 
       {:DOWN, ^mon, _, _, :killed} when type == :brutal_kill ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         flush_reply(ref)
 
       {:DOWN, ^mon, _, proc, :noproc} ->
@@ -1276,12 +1345,12 @@ defmodule Task do
         flush_reply(ref) || reason
 
       {:DOWN, ^mon, _, proc, reason} ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         flush_reply(ref) || {:down, proc, reason}
     after
       timeout ->
         Process.exit(task.pid, :kill)
-        shutdown_receive(task, mon, :timeout_kill, :infinity)
+        shutdown_receive(ref, mon, task, :timeout_kill, :infinity)
     end
   end
 
@@ -1305,10 +1374,52 @@ defmodule Task do
         {:down, proc, reason}
     after
       0 ->
-        Process.demonitor(ref, [:flush])
+        demonitor(ref)
         {:down, proc, :noproc}
     end
   end
+
+  ## Optimizations
+
+  defp build_monitor(pid) do
+    :erlang.monitor(:process, pid)
+  end
+
+  defp build_alias(pid) do
+    :erlang.monitor(:process, pid, alias: :demonitor)
+  end
+
+  @doc false
+  # This instructs the Erlang compiler to apply selective
+  # receive optimizations to several functions in this module.
+  # This function is never invoked directly, it is only here
+  # for compiler optimization purposes.
+  #
+  # To verify which functions have been optimized, run the
+  # following command after Elixir is compiled from the project
+  # root:
+  #
+  #     ERL_COMPILER_OPTIONS=recv_opt_info elixir lib/elixir/lib/task.ex
+  #
+  def __recv_opt_info__(pid, task) do
+    await_receive(build_alias(pid), task, :infinity)
+    shutdown_receive(build_alias(pid), build_monitor(pid), task, :shutdown, :infinity)
+    yield_receive(build_alias(pid), task, :infinity)
+    ignore_receive(build_alias(pid), pid, task)
+  end
+
+  ## Helpers
+
+  defp demonitor(ref) when is_reference(ref) do
+    Process.demonitor(ref, [:flush])
+    :ok
+  end
+
+  defp reason(:noconnection, proc), do: {:nodedown, monitor_node(proc)}
+  defp reason(reason, _), do: reason
+
+  defp monitor_node(pid) when is_pid(pid), do: node(pid)
+  defp monitor_node({_, node}), do: node
 
   defp invalid_owner_error(task) do
     "task #{inspect(task)} must be queried from the owner but was queried from #{inspect(self())}"
